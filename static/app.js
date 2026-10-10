@@ -1,5 +1,7 @@
 'use strict';
 let DATA = null;
+let selectedAnomaly = null;
+let anomalyFilter = 'all';
 const $ = id => document.getElementById(id);
 const fmt = x => '$' + Math.abs(Number(x||0)).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
 const signed = x => (Number(x)<0 ? '−' : '') + fmt(x);
@@ -7,7 +9,7 @@ const text = (id,value) => {$(id).textContent = String(value)};
 const friendlyMonth = iso => new Date(iso+'-01T00:00:00').toLocaleString('en-US',{month:'short',year:'numeric'});
 const escapeHTML = value => String(value??'').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 function notify(message, bad=false) { const box=$('alert');box.textContent=message;box.classList.remove('hidden');box.classList.toggle('error',bad);setTimeout(()=>box.classList.add('hidden'),7000);}
-const pageInfo = {overview:['Overview','A clearer picture of your business.','From transactions to foresight. Understand what changed, what matters, and what comes next.'],forecast:['Forecast & Scenarios','Plan for what comes next.','Explore the cash implications of tomorrow’s decisions.'],subscriptions:['Subscriptions','Make every recurring dollar count.','Understand recurring expenses and price changes.'],transactions:['Transactions','Your money, line by line.','Transparent transaction analysis with an audit trail.'],wrapped:['Business Wrapped','Your financial story, reimagined.','FINOVA turns numbers into a meaningful business recap.']};
+const pageInfo = {anomalies:['Anomaly Explorer','Find what changed. Understand why it matters.','Evidence-backed cost and invoice investigations.'],overview:['Overview','A clearer picture of your business.','From transactions to foresight. Understand what changed, what matters, and what comes next.'],forecast:['Forecast & Scenarios','Plan for what comes next.','Explore the cash implications of tomorrow’s decisions.'],subscriptions:['Subscriptions','Make every recurring dollar count.','Understand recurring expenses and price changes.'],transactions:['Transactions','Your money, line by line.','Transparent transaction analysis with an audit trail.'],wrapped:['Business Wrapped','Your financial story, reimagined.','FINOVA turns numbers into a meaningful business recap.']};
 function switchPage(id){
  document.querySelectorAll('.page').forEach(el=>el.classList.toggle('hidden',el.id!==id));
  document.querySelectorAll('.nav-link').forEach(el=>el.classList.toggle('active',el.dataset.view===id));
@@ -36,7 +38,9 @@ function render(){if(!DATA)return;
  text('expense-trend',t.expense_change_pct===null?'Includes payroll & subscriptions':`${t.expense_change_pct>0?'+':''}${t.expense_change_pct}% vs previous month`);
  const biggest=Math.max(...d.categories.map(c=>c.amount),1);
  $('category-bars').innerHTML=d.categories.slice(0,6).map(c=>`<div><div class="bar-label"><span>${escapeHTML(c.category)}</span><b>${fmt(c.amount)}</b></div><div class="bar-bg"><div class="bar-fill" style="width:${Math.max(1,100*c.amount/biggest)}%"></div></div></div>`).join('')||'<p>No expense categories found.</p>';
- $('insight-list').innerHTML=d.anomalies.slice(0,4).map(a=>`<div class="insight"><div class="insight-icon">!</div><div><strong>${escapeHTML(a.type)} · ${escapeHTML(a.category)}</strong><p>${escapeHTML(a.message)}</p></div></div>`).join('')||'<p>No notable anomalies detected.</p>';
+ $('insight-list').innerHTML=d.anomalies.slice(0,4).map(a=>`<button class="insight insight-link" type="button" data-anomaly="${escapeHTML(a.id)}"><div class="insight-icon">!</div><div><strong>${escapeHTML(a.type)} · ${escapeHTML(a.category)}</strong><p>${escapeHTML(a.message)}</p><small>Investigate evidence →</small></div></button>`).join('')||'<p>No notable anomalies detected.</p>';
+ $('insight-list').querySelectorAll('[data-anomaly]').forEach(button=>button.addEventListener('click',()=>openAnomaly(button.dataset.anomaly)));
+ renderAnomalies();
  const future=d.forecast[0];text('predicted-sales',future.invoiced_revenue===null?'Not provided':fmt(future.invoiced_revenue));text('future-in',fmt(future.cash_in));text('future-out',fmt(future.cash_out));text('future-net',signed(future.net));text('future-ar',fmt(t.outstanding_invoices));
  $('invoice-list').innerHTML=d.overdue_invoices.slice(0,8).map(i=>`<div class="invoice"><div><strong>${escapeHTML(i.customer)}</strong> <span>· ${escapeHTML(i.invoice)} · due ${escapeHTML(i.due)}</span></div><b>${fmt(i.amount)} · ${i.overdue_days} days overdue</b></div>`).join('')||'<p>No overdue invoices in this dataset.</p>';
  text('sub-count',d.subscriptions.length);text('sub-monthly',fmt(t.subscription_monthly));text('sub-annual',fmt(t.subscription_annual));
@@ -44,26 +48,85 @@ function render(){if(!DATA)return;
  text('wrap-income',fmt(d.wrapped.cash_in));text('wrap-expense',fmt(d.wrapped.cash_out));text('wrap-month',friendlyMonth(d.wrapped.biggest_expense_month));text('wrap-category',d.wrapped.largest_category);text('wrap-subs',fmt(d.wrapped.subscription_annual));
  renderTransactions();updateScenario();window.FINOVAStory.setData(d);requestAnimationFrame(drawCharts);
 }
+function openAnomaly(id){
+  selectedAnomaly=id;
+  anomalyFilter='all';
+  document.querySelectorAll('.anomaly-filter').forEach(b=>b.classList.toggle('active',b.dataset.filter==='all'));
+  switchPage('anomalies');
+  renderAnomalies();
+}
+function renderAnomalies(){
+  if(!DATA)return;
+  const all=DATA.anomalies||[];
+  text('anomaly-count',all.length);
+  text('spike-count',all.filter(a=>a.type==='Spending spike').length);
+  text('price-count',all.filter(a=>a.type==='Subscription increase').length);
+  text('overdue-count',DATA.totals.overdue_invoices);
+  const visible=all.filter(a=>anomalyFilter==='all'||a.type===anomalyFilter);
+  if(!visible.some(a=>a.id===selectedAnomaly))selectedAnomaly=visible.length?visible[0].id:null;
+  $('anomaly-list').innerHTML=visible.map(a=>`<button class="anomaly-item ${a.id===selectedAnomaly?'selected':''}" type="button" data-anomaly="${escapeHTML(a.id)}">
+    <span class="anomaly-type">${escapeHTML(a.type)}</span><strong>${escapeHTML(a.category)} <span>›</span></strong>
+    <small>${escapeHTML(a.month)} · ${escapeHTML(a.message)}</small></button>`).join('') || '<p class="anomaly-empty">No flagged patterns in this category.</p>';
+  $('anomaly-list').querySelectorAll('[data-anomaly]').forEach(b=>b.addEventListener('click',()=>{selectedAnomaly=b.dataset.anomaly;renderAnomalies();}));
+  renderAnomalyDetail(visible.find(a=>a.id===selectedAnomaly));
+}
+function renderAnomalyDetail(a){
+  const el=$('anomaly-detail');
+  if(!a){el.innerHTML='<p>Choose a financial signal to inspect its evidence.</p>';return;}
+  const pct=(a.increase_pct!==null&&a.increase_pct!==undefined)?`<span class="detail-badge">+${escapeHTML(a.increase_pct)}% vs baseline</span>`:'';
+  const baseline=a.baseline!==null&&a.baseline!==undefined?`<div><small>Comparison baseline</small><strong>${fmt(a.baseline)}</strong></div>`:'';
+  const stats=`<div class="anomaly-stats"><div><small>Flagged amount</small><strong>${fmt(a.amount)}</strong></div>${baseline}<div><small>Period</small><strong>${escapeHTML(a.month)}</strong></div></div>`;
+  const transactions=(a.evidence||[]).length?`<h4>Supporting transactions <span>(${a.evidence_count||a.evidence.length} matching records; showing up to ${a.evidence.length})</span></h4>
+    <div class="table-scroll"><table class="evidence-table"><thead><tr><th>Date</th><th>Counterparty / description</th><th class="right">Amount</th></tr></thead><tbody>${a.evidence.map(t=>`<tr><td>${escapeHTML(t.date)}</td><td>${escapeHTML(t.vendor)}<small>${escapeHTML(t.description)}</small></td><td class="right">${fmt(t.amount)}</td></tr>`).join('')}</tbody></table></div>`:'';
+  const invoices=(a.invoices||[]).length?`<h4>Overdue customer invoices <span>(at reporting date)</span></h4><div class="table-scroll"><table class="evidence-table"><thead><tr><th>Customer / invoice</th><th>Due</th><th class="right">Outstanding</th></tr></thead><tbody>${a.invoices.map(i=>`<tr><td>${escapeHTML(i.customer)}<small>${escapeHTML(i.invoice)}</small></td><td>${escapeHTML(i.due)}<small>${i.overdue_days} days late</small></td><td class="right">${fmt(i.amount)}</td></tr>`).join('')}</tbody></table></div>`:'';
+  const hist=a.history?.length?`<h4>Recorded monthly amounts</h4><div class="anomaly-history">${a.history.map(h=>`<div><small>${escapeHTML(h.month)}</small><strong>${fmt(h.amount)}</strong><i style="width:${Math.max(3,Math.min(100,100*h.amount/Math.max(1,...a.history.map(z=>z.amount))))}%"></i></div>`).join('')}</div>`:'';
+  el.innerHTML=`<div class="anomaly-detail-heading"><span class="eyebrow">${escapeHTML(a.type)} · ${escapeHTML(a.category)}</span><h3>${escapeHTML(a.message)}</h3>${pct}</div>
+    ${stats}<h4>How FINOVA flagged it</h4><p>${escapeHTML(a.method||'FINOVA compared historical records.')}</p>
+    ${hist}${transactions}${invoices}<div class="anomaly-action"><strong>Recommended next step</strong><p>${escapeHTML(a.action||'Review the original source records.')}</p></div>
+    <button id="explain-anomaly" type="button" class="button button-primary">✦ Ask FINOVA about this</button>`;
+  $('explain-anomaly').addEventListener('click',()=>{
+    switchPage('overview');
+    const q=`Explain the ${a.type.toLowerCase()} for ${a.category} in ${a.month} and what we should check.`;
+    $('question').value=q;ask(q);
+    $('ai-answer').scrollIntoView({behavior:'smooth',block:'center'});
+  });
+}
 function renderTransactions(){if(!DATA)return;const q=$('transaction-search').value.trim().toLowerCase();const trs=DATA.recent_transactions.filter(t=>[t.description,t.category,t.vendor,t.date].some(x=>String(x).toLowerCase().includes(q)));
  $('transaction-table').innerHTML=trs.map(t=>`<tr><td>${escapeHTML(t.date)}</td><td><strong>${escapeHTML(t.description)}</strong></td><td>${escapeHTML(t.category)}</td><td>${escapeHTML(t.type)}</td><td class="right ${t.signed<0?'negative':'positive'}">${signed(t.signed)}</td></tr>`).join('')||'<tr><td colspan="5">No matching transactions found.</td></tr>';
 }
 function updateScenario(){if(!DATA)return;let r=Number($('rev-slider').value),e=Number($('exp-slider').value);text('rev-label',`${r>0?'+':''}${r}%`);text('exp-label',`${e>0?'+':''}${e}%`);let f=DATA.forecast[0];text('scenario-net',signed(f.cash_in*(1+r/100)-f.cash_out*(1+e/100)))}
-async function boot(){try { const status=await getJSON('/api/health');text('ai-connection',status.akamai_connected?'Akamai key configured (verify connection)':'Offline financial analysis ready');text('akamai-status',status.akamai_connected?'Akamai team key loaded. Click Test Akamai connection to verify live access.':'Offline mode: configure your Akamai team key in finova/.env to generate AI artwork. The animated video works without a key.');DATA=await getJSON('/api/dashboard');render();} catch(e){notify(e.message,true)}}
+async function boot(){try { const status=await getJSON('/api/health');text('ai-connection',status.akamai_key_loaded?'Akamai key loaded (verify connection)':'Offline financial analysis ready');text('akamai-status',status.akamai_key_loaded?'Akamai team key loaded. Click Test Akamai connection to verify live access.':'Offline mode: configure your Akamai team key in finova/.env to generate AI artwork. The animated video works without a key.');DATA=await getJSON('/api/dashboard');render();} catch(e){notify(e.message,true)}}
 async function uploadFile(file){if(!file)return;if(!/\.(csv|xlsx)$/i.test(file.name)){notify('Choose a .xlsx or .csv file.',true);return}if(file.size>12*1024*1024){notify('File too large for this demo.',true);return}
  $('loading').style.display='block';try{const fd=new FormData();fd.append('file',file);const response=await getJSON('/api/upload',{method:'POST',body:fd});DATA=response.summary;window.FINOVAStory.resetArt();text('loaded-file',file.name);render();switchPage('overview');notify(`Analyzed ${DATA.transaction_count.toLocaleString()} financial transactions successfully.`)}catch(e){notify(e.message,true)}finally{$('loading').style.display='none';$('file-input').value=''}}
-async function ask(question){const output=$('ai-answer');output.textContent='FINOVA is analyzing the figures…';try{const res=await getJSON('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question})});output.textContent=res.answer;text('ai-source',res.source)}catch(e){output.textContent=e.message}}
+async function ask(question){
+ const output=$('ai-answer');output.textContent='FINOVA is analyzing the figures…';
+ try{
+  const res=await getJSON('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question})});
+  output.textContent=res.answer;text('ai-source',res.source);
+  const mode=$('ai-mode');
+  if(res.mode==='local'){
+    mode.textContent=(res.warning?`Akamai unavailable: ${res.warning} `:'')+'Showing evidence-based local analysis.';
+    mode.classList.add('is-local');text('ai-connection','FINOVA local analysis active');
+  } else {mode.textContent='Akamai AI connected · Answer grounded in verified FINOVA calculations.';mode.classList.remove('is-local');text('ai-connection','Akamai AI connected');}
+ }catch(e){output.textContent='FINOVA could not answer: '+e.message;}
+}
 window.addEventListener('DOMContentLoaded',()=>{
  document.querySelectorAll('.nav-link').forEach(b=>b.addEventListener('click',()=>switchPage(b.dataset.view)));
  $('file-input').addEventListener('change',e=>uploadFile(e.target.files[0]));
  $('reset-btn').addEventListener('click',async()=>{try{const res=await getJSON('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});DATA=res.summary;text('loaded-file','Demo workbook: finova.xlsx');window.FINOVAStory.resetArt();render();notify('Demo workbook restored.')}catch(e){notify(e.message,true)}});
  $('transaction-search').addEventListener('input',renderTransactions);
+ $('view-all-anomalies').addEventListener('click',()=>openAnomaly(null));
+ document.querySelectorAll('.anomaly-filter').forEach(b=>b.addEventListener('click',()=>{
+  anomalyFilter=b.dataset.filter;selectedAnomaly=null;
+  document.querySelectorAll('.anomaly-filter').forEach(x=>x.classList.toggle('active',x===b));renderAnomalies();
+ }));
  ['rev-slider','exp-slider'].forEach(id=>$(id).addEventListener('input',updateScenario));
- document.querySelectorAll('[data-prompt]').forEach(b=>b.addEventListener('click',()=>{text('question',b.dataset.prompt);ask(b.dataset.prompt)}));
+ document.querySelectorAll('[data-prompt]').forEach(b=>b.addEventListener('click',()=>{$('question').value=b.dataset.prompt;ask(b.dataset.prompt)}));
  $('ask-form').addEventListener('submit',e=>{e.preventDefault();let q=$('question').value.trim();if(q)ask(q)});
  window.FINOVAStory.init();
  $('akamai-test').addEventListener('click',async()=>{
    const btn=$('akamai-test');btn.disabled=true;text('akamai-status','Testing your live Akamai workshop access…');
-   try{const res=await getJSON('/api/akamai-test');text('akamai-status',res.message);$('akamai-status').classList.remove('is-error');text('ai-connection','Akamai API access verified');}
+   try{const res=await getJSON('/api/akamai-test');text('akamai-status',res.message);$('akamai-status').classList.remove('is-error');text('ai-connection','Akamai API access verified');text('ai-mode','Akamai API verified. Ask FINOVA to generate an AI explanation.');}
    catch(e){text('akamai-status',e.message);$('akamai-status').classList.add('is-error')}
    finally{btn.disabled=false}
  });

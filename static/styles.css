@@ -40,3 +40,36 @@
 .story-stats{margin-top:16px}
 @media(max-width:900px){.story-ai-panel{flex-direction:column;align-items:stretch}.story-ai-actions{flex-direction:row;flex-wrap:wrap}.story-ai-actions button{flex:1}}
 @media(max-width:600px){.story-workspace{padding:17px}.story-top{display:block}.story-video-pill{display:inline-block;margin-top:13px}.story-stage{padding-top:16px;max-height:68vh}.story-controls .button{flex:1}.story-setting{width:100%;justify-content:center}.story-ai-actions{flex-direction:column}}
+
+/* V3: traceable financial anomaly investigations and resilient AI mode. */
+.insight-link{width:100%;text-align:left;cursor:pointer;font-family:inherit;border:1px solid #e5ebf3;background:#fff;display:flex;gap:12px}
+.insight-link:hover,.insight-link:focus-visible{outline:2px solid #17a994;outline-offset:1px;background:#f6fefa}
+.insight-link small{color:#087c75;display:block;margin-top:8px;font-size:10px;font-weight:750}
+.insight-all{margin-top:14px;width:100%;background:#ecf8f5!important;color:#087969!important}
+.ai-mode{font-size:11px;font-weight:650;color:#097b6e;background:#ebfaf5;border:1px solid #d0f1e8;border-radius:9px;padding:10px 13px;margin:11px 0 2px;line-height:1.6}
+.ai-mode.is-local{background:#fff6e8;color:#805c27;border-color:#f2e4cc}
+.anomaly-workspace{display:grid;grid-template-columns:minmax(275px,.82fr) minmax(0,1.4fr);gap:17px;align-items:start}
+.anomaly-list-panel,.anomaly-detail-panel{min-height:400px}
+.anomaly-filters{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 13px}
+.anomaly-filter{border:1px solid #dfe8f2;background:#f8fafc;border-radius:24px;padding:8px 10px;font-size:11px;cursor:pointer;color:#53657b}
+.anomaly-filter.active{background:#173453;border-color:#173453;color:#fff}
+.anomaly-list{display:grid;gap:8px;max-height:725px;overflow-y:auto}
+.anomaly-item{border:1px solid #e3eaf1;background:#fff;border-radius:12px;padding:13px;text-align:left;cursor:pointer;font-family:inherit;color:#152642}
+.anomaly-item.selected,.anomaly-item:hover{background:#effbf7;border-color:#17b19a}
+.anomaly-item strong{display:flex;justify-content:space-between;gap:8px;margin:6px 0 3px;font-size:12px}
+.anomaly-item small{display:block;line-height:1.5;font-size:10px;color:#75849a}
+.anomaly-type{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#0b9c86;font-weight:850}
+.anomaly-empty{font-size:12px;color:#728197;line-height:1.5}
+.anomaly-detail{font-size:12px;color:#4c5f77;line-height:1.65}
+.anomaly-detail h4{color:#203555;font-size:12px;margin:22px 0 6px}
+.anomaly-detail h4 span{font-size:10px;color:#8292a6;font-weight:400}
+.anomaly-detail-heading h3{font-size:19px;line-height:1.4;color:#122d4c;margin:8px 0 10px}
+.detail-badge{background:#fff3dc;color:#936011;padding:7px 11px;border-radius:20px;font-size:10px}
+.anomaly-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:9px;margin:22px 0}
+.anomaly-stats>div{border:1px solid #e3eaf1;border-radius:10px;padding:13px;background:#fafbfd}
+.anomaly-stats small,.anomaly-stats strong{display:block}.anomaly-stats small{font-size:10px;color:#8b97a7}.anomaly-stats strong{font-size:16px;color:#172b4b;margin-top:6px}
+.anomaly-history{display:grid;gap:8px}.anomaly-history>div{display:grid;grid-template-columns:78px 90px minmax(60px,1fr);align-items:center;gap:8px;font-size:10px}
+.anomaly-history strong{color:#172b4b}.anomaly-history i{height:9px;border-radius:8px;background:linear-gradient(90deg,#10b7a4,#758bde)}
+.evidence-table{font-size:10px}.evidence-table th,.evidence-table td{padding:10px 8px}.evidence-table td small{display:block;color:#7c899c;font-size:9px;margin-top:4px}
+.anomaly-action{background:#e9f8f4;border:1px solid #cbede4;border-radius:12px;padding:14px;margin:20px 0 15px}.anomaly-action strong{color:#146e61}.anomaly-action p{margin-top:5px}
+@media(max-width:1100px){.anomaly-workspace{grid-template-columns:1fr}}

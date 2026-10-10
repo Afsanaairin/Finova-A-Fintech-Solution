@@ -1,66 +1,65 @@
-# FINOVA v2 — Animated Business Wrapped + Akamai Integration
+# FINOVA v3 — Interactive anomaly evidence and resilient financial Q&A
 
-FINOVA (Finance Innovation) converts an uploaded financial workbook into a local finance dashboard and animated video. This version **preserves all v1 features** and adds an eight-scene Business Wrapped with exportable video, an original synthesized soundtrack, Akamai artwork integration, and a key-connection test.
+Version 3 is a targeted update to an existing FINOVA v2 installation. The data workbook, cash-flow math outside the anomaly evidence additions, and animated Business Wrapped (`static/wrapped.js`) remain unchanged.
 
-## The fastest way to run
+## Features
 
-Open a terminal *inside the `finova` folder* (this folder contains `run.py`).
+- **Anomaly Explorer** sidebar page: selectable expense spikes, price increases, and overdue customer invoices with historical baseline, threshold, associated ledger records, and a suggested investigation step.
+- **Overview investigation buttons:** Select a FINOVA intelligence alert and open the relevant evidence directly.
+- **Graceful AI fallback:** If Akamai returns `401`, `403`, `429`, networking errors, or another upstream failure, `/api/ask` returns a verified local calculation-based response, with the failure explained in the interface. The local response is **not** represented as Akamai-generated.
+- **Akamai key configuration fix:** The values in the project's `.env` override inherited shell variables. This follows the workshop's `load_dotenv(override=True)` convention.
+- **Smaller AI context:** Sends selected computed metrics and anomaly summaries, not every underlying transaction, to the workshop chat service.
+- **Pre-existing features preserved:** 3-month estimates, what-if simulator, subscriptions, Excel upload, transaction search, Business Wrapped animation and downloadable video.
 
-- **Windows CMD:** `py -3 run.py`
-- **Windows if `py` is unavailable:** `python run.py`
-- **macOS / Linux:** `python3 run.py`
+## Windows CMD
 
-Open **http://127.0.0.1:8000**. This build uses only the standard library in Python 3.10+; no pip install needed. If an old FINOVA server is using port 8000, stop it with Ctrl+C before launching v2.
+From the existing folder containing `run.py`:
 
-The starter workbook is `data/finova.xlsx`. All new installations start with the fictional Lakeview Creative Studio LLC dataset; upload a different CSV or XLSX to switch. **Use synthetic data for the hackathon.**
+```bat
+py -3 run.py
+```
 
-## Export a Spotify-style Business Wrapped
+Then open http://127.0.0.1:8000 and use **Ctrl+Shift+R** to reload the updated JavaScript. Stop the old server with `Ctrl+C` first.
 
-1. Click **Business Wrapped** in the left menu.
-2. Select **9:16 · Social story** or **16:9 · Judge demo**.
-3. Click **Play Wrapped** for the animated experience.
-4. Click **Export video**, and **keep the browser tab visible** until recording ends (about 30 seconds). Your browser downloads `FINOVA_Business_Wrapped.webm` in Chromium browsers. An original synthesizer soundtrack is included by default; uncheck Original soundtrack for silent video.
-5. Chrome and Edge provide the most reliable browser recording support. Other browsers can play the story but may have different recording capabilities. If you need MP4 for judges and have FFmpeg installed, run `ffmpeg -i FINOVA_Business_Wrapped.webm -c:v libx264 -pix_fmt yuv420p -c:a aac FINOVA_Business_Wrapped.mp4` in the directory where the video was downloaded.
+## macOS and Linux
 
-The video is **rendered locally in the browser**, not by an Akamai video model. The Akamai workshop supplies **image generation**, which we can use to add an original decorative background to the story. Metrics, labels and comparisons come from FINOVA's validated calculations, not from generated images.
+```bash
+python3 run.py
+```
 
-## Connect Akamai hosted AI and images
+Refresh with **Cmd+Shift+R** on macOS or **Ctrl+Shift+R** on Linux.
 
-1. In `finova`, copy `.env.example` to `.env`.
-   - **Windows CMD:** `copy .env.example .env`
-   - **macOS / Linux:** `cp .env.example .env`
-2. Edit `.env` in a text editor. Keep the workshop endpoint:
+## Diagnose Akamai HTTP 401
 
-   `OPENAI_BASE_URL=https://ws.akamai-workshops.com/v1`
+1. Open **your existing** `finova/.env` file; do not replace it with `.env.example`.
+2. Verify the exact values, without exposing the real key:
+   ```ini
+   OPENAI_BASE_URL=https://ws.akamai-workshops.com/v1
+   OPENAI_API_KEY=hk_YOUR_REAL_TEAM_KEY
+   ```
+3. Save `.env`, restart FINOVA, open **Business Wrapped → Test Akamai connection**.
+4. `HTTP 401` means the Akamai workshop endpoint rejected your credential. Verify with hackathon staff that the key is activated and assigned to your team. Don't send the actual key in chat or commit it to Git.
+5. A key appearing in the sidebar means it was _loaded_, not that authentication succeeded. FINOVA still offers local financial analysis until the issue is resolved.
 
-   Replace the placeholder after `OPENAI_API_KEY=` with **the real `hk_...` team key provided by the event organizers**.
-3. Save `.env` and restart FINOVA. The API key must never go into client-side JavaScript, screenshots, or a public GitHub repository.
-4. Open **Business Wrapped → Test Akamai connection**. The screen should show either the available model aliases or an actionable failure message.
-5. Click **Generate Akamai artwork**, and when it succeeds click **Play Wrapped** or **Export video**. The artwork becomes a decorative opening/closing backdrop. For AI explanations, use **Ask FINOVA** on Overview; the backend sends verified metrics to `hackathon-chat`.
+## Quick demo walkthrough
 
-If the team key isn't configured, the UI displays an explanation. The financial dashboard **and entire animation/video export still work offline**.
+1. **Overview:** Click the Electricity or Adobe alert card.
+2. **Anomaly Explorer:** Select the **Spending spikes** filter and the **Electricity / June 2026** finding. View the flagged **$1,166.39** versus typical recent **$716.43**, supporting ledger transaction(s), and the recommended review.
+3. **Invoice filter:** Look at the overdue customer invoice table.
+4. **Ask FINOVA:** Try `Why have our expenses changed?`, `What subscriptions should we review?`, `What invoices are overdue?`, or click **Ask FINOVA about this** on an anomaly.
+5. **Business Wrapped:** The v2 video playback/export is unchanged and works without a team key. Generating new Akamai artwork still needs verified credentials.
 
-## Troubleshooting
+## Limitations
 
-- **Akamai button doesn't work:** check the inline message in the Wrapped page. `.env.example` isn't read as credentials; make a real `.env` and paste your team key. A 401 means rejected key; 403 means denied; 429 means rate-limited. Use the Test Akamai connection button.
-- **Port already in use:** close the old terminal or edit `PORT=8001` in `.env` and use the new address.
-- **Export button disabled:** it is temporarily disabled while a story is playing/recording; allow the current story to end.
-- **Video has glitches / missing frames:** keep the tab active and visible, use current Chrome or Edge, and choose 9:16 as the default if your computer is slow.
-- **Trying this on Mac/Linux:** the application runs with `python3 run.py`; no Windows path assumptions.
-- **Browser upload:** other bank statement CSVs must have recognizable date, type, description, and amount columns. The multi-sheet `finova.xlsx` supports the richer invoices/payroll/subscriptions features.
-- **Financial facts:** Cash receipts and billed revenue are different. Never double count related source worksheets. Forecasts are illustrative historical estimates, not trained neural-network models or guarantees.
+- Historical spike checks compare a month's category spending to the median of up to six _previous months with activity_ for that category. They are deterministic statistical rules, not a trained fraud model or causal proof. These rules can miss irregular, nonrecurring spending and should be tuned per business.
+- Overdue dates are evaluated **as of the Excel workbook's latest reporting month**, not live current time.
+- The local assistant is a grounded rule-based fallback, not an LLM. It intentionally handles a limited set of common financial questions. The hosted Akamai model remains necessary for open-ended AI explanations.
+- Neither this release nor the previous releases should be exposed publicly with real financial data without authentication, per-tenant data isolation, HTTPS, input and upload security review, and an appropriate production server.
 
-## Project files
+## Run regression tests
 
-- `run.py` — cross-platform startup
-- `server.py` — local HTTP API, security headers, Akamai calls, API test
-- `finance.py` — calculations, anomaly checks and forecasting
-- `xlsx_reader.py` — CSV/XLSX standard-library data import
-- `static/index.html`, `static/styles.css`, `static/app.js` — dashboard and integrations
-- `static/wrapped.js` — 8-scene graphics engine, browser video recorder and soundtrack
-- `data/finova.xlsx` — fictional demo data
-- `tests/test_finova.py` — financial reconciliation tests
+```bash
+python3 -m unittest discover -s tests -v
+```
 
-## Scope, limitations, privacy
-
-This is a **local hackathon prototype**, not a secure multi-tenant hosted accounting platform. Uploaded data is held in the demo server's session memory. Do not deploy this server directly to the public internet or upload real customer or employee financial records without authentication, HTTPS, access controls and data retention policies. The generated cover must be treated as illustration, not evidence. No subscription cancellation or payment initiation is implemented.
+On Windows CMD, replace `python3` with `py -3`.

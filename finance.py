@@ -174,7 +174,47 @@ def analyze(data):
                           'amount':money(sum(i['amount'] for i in invoices_overdue)), 'baseline':None,
                           'increase_pct':None,
                           'message': f'{len(invoices_overdue)} invoice(s) remain overdue as of {as_of.isoformat()}.'})
+    # Evidence and explicit explanations are derived from the same ledger used
+    # for the dashboard. Never invent a transaction to illustrate an alert.
+    for anomaly in anomalies:
+        category = anomaly['category']
+        month = anomaly['month']
+        if anomaly['type'] == 'Spending spike':
+            evidence = [t for t in normalized if t['type'] == 'Expense' and
+                        t['category'] == category and t['month'] == month]
+            evidence.sort(key=lambda t: t['amount'], reverse=True)
+            anomaly['evidence'] = evidence[:12]
+            anomaly['evidence_count'] = len(evidence)
+            anomaly['method'] = ('Current monthly category spending compared with the median of the '
+                                 'previous six months with recorded spending in this category. '
+                                 'Flagged when more than 40% higher and at least $100 above baseline.')
+            anomaly['action'] = 'Review the listed payments, check quantity or price changes, and ask the vendor about unexpected costs.'
+            anomaly['history'] = [{'month': mon, 'amount': money(val)} for mon, val in
+                                  sorted(by_month_category[category].items()) if mon <= month][-7:]
+        elif anomaly['type'] == 'Subscription increase':
+            sub = next((s for s in subs if s['monthly_cost'] == anomaly['amount'] and
+                        s['original_cost'] == anomaly['baseline'] and s['price_increase'] > 0), None)
+            name = sub['name'] if sub else 'Subscription'
+            evidence = [t for t in normalized if t['type']=='Expense' and
+                        t['category']=='Software Subscriptions' and t['vendor'].lower() == name.lower()]
+            evidence.sort(key=lambda t: t['date'], reverse=True)
+            anomaly['evidence'] = evidence[:8]
+            anomaly['evidence_count'] = len(evidence)
+            anomaly['method'] = 'Latest recorded monthly charge compared with the first recorded monthly charge for the service.'
+            anomaly['action'] = 'Review the vendor invoice and plan tier, confirm licenses in use, then evaluate whether a lower tier is appropriate.'
+            anomaly['service'] = name
+            anomaly['history'] = [{'month': t['month'], 'amount': t['amount']} for t in reversed(evidence[:8])]
+        else:
+            anomaly['invoices'] = invoices_overdue[:15]
+            anomaly['evidence'] = []
+            anomaly['evidence_count'] = len(invoices_overdue)
+            anomaly['method'] = f'Invoice outstanding amount > $0 and due date before the reporting date {as_of.isoformat()}.'
+            anomaly['action'] = 'Confirm expected payment dates with the listed customers and investigate disputed or delayed invoices.'
+            anomaly['history'] = []
     anomalies.sort(key=lambda a:(a['type']=='Overdue invoices', a['type']=='Subscription increase', a.get('amount', 0)),reverse=True)
+    for idx, anomaly in enumerate(anomalies):
+        anomaly['id'] = f'alert-{idx+1}'
+
     last6 = monthly[-6:]
     billed_recent = [m['invoiced_revenue'] for m in monthly[-3:] if m['invoiced_revenue'] is not None]
     hist_income = [m['cash_in'] for m in last6]
@@ -198,6 +238,14 @@ def analyze(data):
                        'invoiced_revenue':predicted_sales,
                        'cash_in_low':money(inc*.8),'cash_in_high':money(inc*1.2),
                        'cash_out_low':money(exp*.85),'cash_out_high':money(exp*1.15)})
+    recent_category_comparison = []
+    for category in sorted(set(by_month_category)):
+        current = money(by_month_category[category].get(last, 0))
+        previous = money(by_month_category[category].get(prev['month'], 0))
+        if current or previous:
+            recent_category_comparison.append({'category':category, 'current':current,
+                    'previous':previous, 'change':money(current-previous)})
+    recent_category_comparison.sort(key=lambda r:r['change'],reverse=True)
     category_items = sorted([{'category':k,'amount':money(v)} for k,v in categories.items()],key=lambda x:-x['amount'])
     totals = {'cash_in':money(sum(m['cash_in'] for m in monthly)),
               'cash_out':money(sum(m['cash_out'] for m in monthly)),
@@ -227,6 +275,7 @@ def analyze(data):
             'has_invoice_data':bool(data.get('Invoices')), 'totals':totals,
             'monthly':monthly, 'forecast':future,'categories':category_items[:12],
             'subscriptions':subs,'anomalies':anomalies[:24], 'overdue_invoices':invoices_overdue[:15],
+            'recent_category_comparison':recent_category_comparison[:20],
             'wrapped':wrapped,'recent_transactions':list(reversed(normalized))[:100],
             'limitations': ['Cash receipts are not the same as invoiced revenue.',
                             'Forecasts are illustrative heuristic estimates, not trained ML predictions.',

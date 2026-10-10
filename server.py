@@ -22,7 +22,9 @@ SESSIONS = {}
 
 
 def config():
-    values = {}
+    # Prefer the explicit project .env over inherited shell variables.
+    # The workshop also uses load_dotenv(..., override=True).
+    values = dict(os.environ)
     env = BASE / '.env'
     if env.exists():
         for line in env.read_text(encoding='utf-8').splitlines():
@@ -31,7 +33,6 @@ def config():
                 continue
             k, v = line.split('=', 1)
             values[k.strip()] = v.strip().strip('"').strip("'")
-    values.update(os.environ)
     return values
 
 
@@ -68,32 +69,85 @@ def call_akamai(path, payload, timeout=35):
 
 
 def offline_answer(question, summary):
+    """Evidence-based deterministic answers when AI is unavailable.
+
+    Only quote figures already calculated by finance.analyze(). Unknown
+    questions get a bounded help response rather than invented explanation.
+    """
     q = question.lower()
     totals = summary['totals']
-    if 'subscr' in q or 'software' in q:
+    for finding in summary.get('anomalies', []):
+        # Drill-down questions originate from a selected alert; use its
+        # actual period and baseline, not a different month's spending.
+        if finding['month'] in q and finding['category'].lower() in q:
+            baseline = (f" versus baseline ${finding['baseline']:,.2f}"
+                        if finding.get('baseline') is not None else '')
+            return (f"{finding['month']}: {finding['message']} Flagged amount "
+                    f"${finding['amount']:,.2f}{baseline}. "
+                    f"Method: {finding.get('method','historical comparison')} "
+                    f"Suggested next step: {finding.get('action','Review source records.')} "
+                    'This is a signal to investigate, not proof of wrongdoing.')
+    if 'subscr' in q or 'software' in q or 'adobe' in q or 'canva' in q:
         s = summary['subscriptions']
         if not s:
-            return 'This upload has no subscription registry. Add the Subscriptions and Operating Expenses worksheets to analyze recurring software charges.'
+            return 'The uploaded file has no Subscriptions registry. Add that worksheet to analyze recurring costs.'
         changed = [x for x in s if x['price_increase'] > 0]
-        detail = (' Price changes worth reviewing: '+', '.join(f"{x['name']} (+${x['price_increase']:.2f}/month)" for x in changed)+'.') if changed else ''
-        return f"Detected {len(s)} subscriptions totaling ${totals['subscription_monthly']:,.2f}/month (${totals['subscription_annual']:,.2f} annualized).{detail} We cannot infer actual product usage from bank transactions alone."
+        detail = (' Price changes to investigate: ' + ', '.join(
+            f"{x['name']} (+${x['price_increase']:,.2f}/month)" for x in changed) + '.') if changed else ''
+        return (f"We track {len(s)} subscriptions totaling ${totals['subscription_monthly']:,.2f}/month "
+                f"(${totals['subscription_annual']:,.2f} annualized).{detail} "
+                'Payments do not prove whether a subscription was actually used.')
+    if 'invoice' in q or 'late' in q or 'unpaid' in q or 'receivable' in q:
+        inv = summary['overdue_invoices'][:3]
+        detail = ' Examples: ' + '; '.join(f"{i['customer']} / {i['invoice']}: ${i['amount']:,.2f}, "
+                              f"{i['overdue_days']} days overdue" for i in inv) if inv else ''
+        return (f"As of {summary['as_of']}, unpaid invoices total "
+                f"${totals['outstanding_invoices']:,.2f}; {totals['overdue_invoices']} "
+                f"are overdue.{detail} Check with customers before assuming collection dates.")
     if 'forecast' in q or 'next month' in q or 'upcoming' in q or 'cash' in q or 'future' in q:
         f = summary['forecast'][0]
-        return f"For {f['month']}, estimated cash receipts are ${f['cash_in']:,.2f} and estimated payments are ${f['cash_out']:,.2f}; projected net cash movement is ${f['net']:,.2f}. These are simple historical estimates, not guaranteed outcomes. Unpaid invoices can affect actual cash receipts."
-    if 'invoice' in q or 'late' in q or 'unpaid' in q:
-        return f"At the reporting date {summary['as_of']}, outstanding invoices total ${totals['outstanding_invoices']:,.2f}, including {totals['overdue_invoices']} overdue invoices. Prioritize checking customers' expected payment dates rather than assuming all amounts will be collected."
-    if 'why' in q or 'spend' in q or 'anomal' in q or 'cost' in q or 'risk' in q:
-        findings = summary['anomalies'][:3]
-        if findings:
-            return 'FINOVA detected: ' + ' '.join(a['message'] for a in findings) + ' These are patterns to investigate, not proven causes.'
-        return 'No major expense deviations were detected by the current rule-based checks. Explore the Expense Categories and recent months in the dashboard.'
-    return (f"FINOVA analyzed {summary['transaction_count']:,} transactions across {summary['months_count']} months. "
-            f"Last month recorded ${totals['last_month_cash_in']:,.2f} in cash receipts and ${totals['last_month_cash_out']:,.2f} in payments. "
-            "Ask me about subscriptions, late invoices, unusual expenses, or the next month's forecast.")
+        return (f"For {f['month']}, projected cash receipts are ${f['cash_in']:,.2f} "
+                f"and payments are ${f['cash_out']:,.2f}; net movement is "
+                f"${f['net']:,.2f}. These are rule-based estimates with significant "
+                'uncertainty, not guaranteed revenue or profit. Invoice timing may change results.')
+    # If the user names a category, show its real monthly numbers where possible.
+    categories = summary.get('recent_category_comparison', [])
+    found = next((x for x in categories if x['category'].lower() in q and len(x['category']) > 2), None)
+    if found:
+        return (f"In {summary['monthly'][-1]['month']}, {found['category']} payments totaled "
+                f"${found['current']:,.2f}, compared with ${found['previous']:,.2f} in "
+                f"{summary['monthly'][-2]['month'] if len(summary['monthly']) > 1 else summary['monthly'][-1]['month']}. "
+                f"The difference was ${found['change']:,.2f}. "
+                'Open Anomaly Explorer to inspect any flagged transactions.')
+    if 'why' in q or 'spend' in q or 'anomal' in q or 'cost' in q or 'risk' in q or 'change' in q:
+        current, prior = summary['monthly'][-1], summary['monthly'][-2] if len(summary['monthly']) > 1 else summary['monthly'][-1]
+        delta = current['cash_out']-prior['cash_out']
+        changes = sorted(categories,key=lambda x:abs(x['change']),reverse=True)[:3]
+        breakdown = '; '.join(f"{c['category']} {'+' if c['change']>=0 else '-'}${abs(c['change']):,.2f}" for c in changes)
+        findings = summary['anomalies'][:2]
+        flags = ' Flags to investigate: ' + '; '.join(a['message'] for a in findings) if findings else ''
+        return (f"Payments changed by {'+' if delta>=0 else '-'}${abs(delta):,.2f} between "
+                f"{prior['month']} and {current['month']}. Largest category movements: {breakdown or 'not available'}."
+                f"{flags} These comparisons describe the records but do not establish causes. "
+                'Open Anomaly Explorer for calculations and evidence.')
+    return (f"FINOVA reviewed {summary['transaction_count']:,} transactions over "
+            f"{summary['months_count']} months. In the latest month, cash receipts were "
+            f"${totals['last_month_cash_in']:,.2f} and payments were "
+            f"${totals['last_month_cash_out']:,.2f}. I can answer questions about "
+            'monthly changes, cost categories, subscriptions, overdue invoices and upcoming cash flow.')
 
 
 def ai_answer(question, summary):
-    metrics = {k:summary[k] for k in ['company','as_of','reporting_period','transaction_count','totals','forecast','anomalies','subscriptions','overdue_invoices','limitations']}
+    # Keep evidence compact for the workshop's 32K token context. Full
+    # transaction drilldowns stay local and are never shipped to the LLM.
+    metrics = {k:summary[k] for k in ['company','as_of','reporting_period',
+                'transaction_count','totals','forecast','limitations']}
+    metrics['anomalies'] = [{k:a.get(k) for k in
+              ('type','category','month','amount','baseline','increase_pct','message')}
+              for a in summary['anomalies'][:10]]
+    metrics['subscriptions'] = summary['subscriptions'][:12]
+    metrics['overdue_invoices'] = summary['overdue_invoices'][:8]
+    metrics['recent_category_comparison'] = summary['recent_category_comparison'][:10]
     messages = [
         {'role':'system','content':('You are FINOVA, a careful business financial intelligence assistant. '
         'The attached JSON contains trusted results computed by Python. Never invent transactions, amounts, comparisons or causal claims. '
@@ -110,7 +164,7 @@ DEFAULT_RESULT = analyze(DEFAULT_DATA)
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'FINOVA-Demo/2.0'
+    server_version = 'FINOVA-Demo/3.0'
     def log_message(self, fmt, *args):
         print('%s - %s' % (self.address_string(), fmt % args))
 
@@ -148,8 +202,8 @@ class Handler(BaseHTTPRequestHandler):
         sid = self._session()
         path = urlsplit(self.path).path
         if path == '/api/health':
-            return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_connected':akamai_configured(),
-                                       'mode':'Key configured; not verified' if akamai_configured() else 'Offline demo' })
+            return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_key_loaded':akamai_configured(), 'akamai_connected':False,
+                                       'mode':'Akamai key loaded; connection not verified' if akamai_configured() else 'Offline demo' })
         if path == '/api/akamai-test':
             if not akamai_configured():
                 return self.send_json(503, {'ok':False,'error':'Akamai key is not configured. Create a .env file from .env.example, insert the hk_ team key, save, then test again.'})
@@ -215,12 +269,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not question:
                     return self.send_json(400,{'error':'Please enter a question.'})
                 if akamai_configured():
-                    reply = ai_answer(question,result)
-                    source = 'Akamai hosted AI + FINOVA calculations'
+                    try:
+                        reply = ai_answer(question,result)
+                        return self.send_json(200,{'answer':reply,
+                            'source':'Akamai hosted AI · Verified FINOVA figures',
+                            'mode':'akamai'})
+                    except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+                        # A broken upstream AI service must never disable financial analysis.
+                        # Never return token or raw upstream response.
+                        print('Akamai assistant unavailable:',str(exc)[:180])
+                        warning = str(exc)[:200]
                 else:
-                    reply = offline_answer(question,result)
-                    source = 'Local deterministic explanation (Akamai key not configured)'
-                return self.send_json(200,{'answer':reply,'source':source})
+                    warning = 'Akamai team API key is not configured.'
+                return self.send_json(200,{'answer':offline_answer(question,result),
+                    'source':'FINOVA local financial analysis',
+                    'mode':'local', 'warning':warning})
             if path == '/api/cover':
                 if not akamai_configured():
                     return self.send_json(503,{'error':'Image generation requires the Akamai team API key in .env.'})

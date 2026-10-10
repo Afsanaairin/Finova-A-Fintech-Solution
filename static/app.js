@@ -42,24 +42,38 @@ function render(){if(!DATA)return;
  text('sub-count',d.subscriptions.length);text('sub-monthly',fmt(t.subscription_monthly));text('sub-annual',fmt(t.subscription_annual));
  $('subscription-list').innerHTML=d.subscriptions.map(s=>`<div class="subscription-row"><div class="service-icon">${escapeHTML((s.name||'?').slice(0,1))}</div><div class="service-name">${escapeHTML(s.name)}<small>Recurring monthly · Usage not known</small></div><div class="service-amount">${fmt(s.monthly_cost)}<small>per month</small></div><div class="review-tag ${s.price_increase===0?'ok':''}">${s.price_increase>0?`↑ ${fmt(s.price_increase)} price rise`:'No price change detected'}</div></div>`).join('')||'<div class="callout">No subscription sheet present in this upload.</div>';
  text('wrap-income',fmt(d.wrapped.cash_in));text('wrap-expense',fmt(d.wrapped.cash_out));text('wrap-month',friendlyMonth(d.wrapped.biggest_expense_month));text('wrap-category',d.wrapped.largest_category);text('wrap-subs',fmt(d.wrapped.subscription_annual));
- renderTransactions();updateScenario();requestAnimationFrame(drawCharts);
+ renderTransactions();updateScenario();window.FINOVAStory.setData(d);requestAnimationFrame(drawCharts);
 }
 function renderTransactions(){if(!DATA)return;const q=$('transaction-search').value.trim().toLowerCase();const trs=DATA.recent_transactions.filter(t=>[t.description,t.category,t.vendor,t.date].some(x=>String(x).toLowerCase().includes(q)));
  $('transaction-table').innerHTML=trs.map(t=>`<tr><td>${escapeHTML(t.date)}</td><td><strong>${escapeHTML(t.description)}</strong></td><td>${escapeHTML(t.category)}</td><td>${escapeHTML(t.type)}</td><td class="right ${t.signed<0?'negative':'positive'}">${signed(t.signed)}</td></tr>`).join('')||'<tr><td colspan="5">No matching transactions found.</td></tr>';
 }
 function updateScenario(){if(!DATA)return;let r=Number($('rev-slider').value),e=Number($('exp-slider').value);text('rev-label',`${r>0?'+':''}${r}%`);text('exp-label',`${e>0?'+':''}${e}%`);let f=DATA.forecast[0];text('scenario-net',signed(f.cash_in*(1+r/100)-f.cash_out*(1+e/100)))}
-async function boot(){try { const status=await getJSON('/api/health');text('ai-connection',status.akamai_connected?'Akamai AI connected':'Offline financial analysis ready');DATA=await getJSON('/api/dashboard');render();} catch(e){notify(e.message,true)}}
+async function boot(){try { const status=await getJSON('/api/health');text('ai-connection',status.akamai_connected?'Akamai key configured (verify connection)':'Offline financial analysis ready');text('akamai-status',status.akamai_connected?'Akamai team key loaded. Click Test Akamai connection to verify live access.':'Offline mode: configure your Akamai team key in finova/.env to generate AI artwork. The animated video works without a key.');DATA=await getJSON('/api/dashboard');render();} catch(e){notify(e.message,true)}}
 async function uploadFile(file){if(!file)return;if(!/\.(csv|xlsx)$/i.test(file.name)){notify('Choose a .xlsx or .csv file.',true);return}if(file.size>12*1024*1024){notify('File too large for this demo.',true);return}
- $('loading').style.display='block';try{const fd=new FormData();fd.append('file',file);const response=await getJSON('/api/upload',{method:'POST',body:fd});DATA=response.summary;text('loaded-file',file.name);render();switchPage('overview');notify(`Analyzed ${DATA.transaction_count.toLocaleString()} financial transactions successfully.`)}catch(e){notify(e.message,true)}finally{$('loading').style.display='none';$('file-input').value=''}}
+ $('loading').style.display='block';try{const fd=new FormData();fd.append('file',file);const response=await getJSON('/api/upload',{method:'POST',body:fd});DATA=response.summary;window.FINOVAStory.resetArt();text('loaded-file',file.name);render();switchPage('overview');notify(`Analyzed ${DATA.transaction_count.toLocaleString()} financial transactions successfully.`)}catch(e){notify(e.message,true)}finally{$('loading').style.display='none';$('file-input').value=''}}
 async function ask(question){const output=$('ai-answer');output.textContent='FINOVA is analyzing the figures…';try{const res=await getJSON('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question})});output.textContent=res.answer;text('ai-source',res.source)}catch(e){output.textContent=e.message}}
 window.addEventListener('DOMContentLoaded',()=>{
  document.querySelectorAll('.nav-link').forEach(b=>b.addEventListener('click',()=>switchPage(b.dataset.view)));
  $('file-input').addEventListener('change',e=>uploadFile(e.target.files[0]));
- $('reset-btn').addEventListener('click',async()=>{try{const res=await getJSON('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});DATA=res.summary;text('loaded-file','Demo workbook: finova.xlsx');$('cover-image').classList.add('hidden');render();notify('Demo workbook restored.')}catch(e){notify(e.message,true)}});
+ $('reset-btn').addEventListener('click',async()=>{try{const res=await getJSON('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});DATA=res.summary;text('loaded-file','Demo workbook: finova.xlsx');window.FINOVAStory.resetArt();render();notify('Demo workbook restored.')}catch(e){notify(e.message,true)}});
  $('transaction-search').addEventListener('input',renderTransactions);
  ['rev-slider','exp-slider'].forEach(id=>$(id).addEventListener('input',updateScenario));
  document.querySelectorAll('[data-prompt]').forEach(b=>b.addEventListener('click',()=>{text('question',b.dataset.prompt);ask(b.dataset.prompt)}));
  $('ask-form').addEventListener('submit',e=>{e.preventDefault();let q=$('question').value.trim();if(q)ask(q)});
- $('cover-btn').addEventListener('click',async()=>{const btn=$('cover-btn');btn.disabled=true;btn.textContent='Generating artwork…';try{const res=await getJSON('/api/cover',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});$('cover-image').src=res.image;$('cover-image').classList.remove('hidden');notify('Cover created by Akamai image generation.')}catch(e){notify(e.message,true)}finally{btn.disabled=false;btn.textContent='✦ Generate Akamai cover'}});
+ window.FINOVAStory.init();
+ $('akamai-test').addEventListener('click',async()=>{
+   const btn=$('akamai-test');btn.disabled=true;text('akamai-status','Testing your live Akamai workshop access…');
+   try{const res=await getJSON('/api/akamai-test');text('akamai-status',res.message);$('akamai-status').classList.remove('is-error');text('ai-connection','Akamai API access verified');}
+   catch(e){text('akamai-status',e.message);$('akamai-status').classList.add('is-error')}
+   finally{btn.disabled=false}
+ });
+ $('cover-btn').addEventListener('click',async()=>{
+   const btn=$('cover-btn');btn.disabled=true;btn.textContent='Generating Akamai art…';
+   text('akamai-status','Requesting artwork from Akamai. This can take a little time.');
+   try{const res=await getJSON('/api/cover',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+     window.FINOVAStory.setArt(res.image);text('akamai-status','Akamai artwork received and added to the story. Play or export it now!');$('akamai-status').classList.remove('is-error');
+   }catch(e){text('akamai-status',e.message+' · Your FINOVA Wrapped animation still works without this image.');$('akamai-status').classList.add('is-error')}
+   finally{btn.disabled=false;btn.textContent='✦ Generate Akamai artwork'}
+ });
  boot();
 });

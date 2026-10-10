@@ -181,3 +181,6 @@ The app contains **no hidden dependency on Flask, pandas, Node.js, cloud databas
 - Recommended production work: authentication, tenant isolation, encrypted storage, rate limits, HTTPS/reverse proxy, access logs and retention rules.
 
 Built during Hack Midwest 2026 — **FINOVA = Finance Innovation**.
+
+---
+**FINOVA v2 update (Hack Midwest 2026):** For the newest Animated Business Wrapped, local video export, Akamai key test and artwork flow, read [README_V2_FIRST.md](README_V2_FIRST.md). This older README describes the v1 financial engine, which remains available.

@@ -38,7 +38,7 @@ def config():
 def akamai_configured():
     v = config()
     key = v.get('OPENAI_API_KEY','')
-    return bool(key and key.lower() not in ('paste_your_team_key_here','your_team_key','your_team_key_here','your_team_key_here_','changeme'))
+    return bool(key and key.startswith('hk_') and 'paste' not in key.lower() and 'your_' not in key.lower() and len(key) > 8)
 
 
 def call_akamai(path, payload, timeout=35):
@@ -56,7 +56,13 @@ def call_akamai(path, payload, timeout=35):
             return json.loads(res.read(5_000_000))
     except error.HTTPError as exc:
         # Keep the secret and upstream raw error out of responses.
-        raise RuntimeError('Akamai service returned HTTP '+str(exc.code)+'. Check your key, quota, or workshop status.') from exc
+        messages = {401:'Akamai rejected the team key (HTTP 401). Check OPENAI_API_KEY in .env.',
+                    403:'Akamai denied access (HTTP 403). Confirm the key with event staff.',
+                    404:'Akamai endpoint was not found (HTTP 404). Check OPENAI_BASE_URL.',
+                    422:'Akamai rejected the model parameters (HTTP 422).',
+                    429:'Akamai rate limit reached (HTTP 429). Try again after the cooldown.',
+                    502:'Akamai image service may be temporarily unavailable (HTTP 502).'}
+        raise RuntimeError(messages.get(exc.code,'Akamai returned HTTP '+str(exc.code)+'. Check the workshop service.')) from exc
     except error.URLError as exc:
         raise RuntimeError('Could not reach Akamai. Check network access and the workshop endpoint.') from exc
 
@@ -104,7 +110,7 @@ DEFAULT_RESULT = analyze(DEFAULT_DATA)
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'FINOVA-Demo/1.0'
+    server_version = 'FINOVA-Demo/2.0'
     def log_message(self, fmt, *args):
         print('%s - %s' % (self.address_string(), fmt % args))
 
@@ -129,7 +135,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('X-Frame-Options','DENY')
-        self.send_header('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         if getattr(self,'_set_cookie',None):
             self.send_header('Set-Cookie', f'finova_demo={self._set_cookie}; HttpOnly; SameSite=Lax; Path=/')
         self.end_headers()
@@ -143,12 +149,31 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == '/api/health':
             return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_connected':akamai_configured(),
-                                       'mode':'Akamai-ready' if akamai_configured() else 'Offline demo'})
+                                       'mode':'Key configured; not verified' if akamai_configured() else 'Offline demo' })
+        if path == '/api/akamai-test':
+            if not akamai_configured():
+                return self.send_json(503, {'ok':False,'error':'Akamai key is not configured. Create a .env file from .env.example, insert the hk_ team key, save, then test again.'})
+            try:
+                conf=config()
+                base=conf.get('OPENAI_BASE_URL','https://ws.akamai-workshops.com/v1').rstrip('/')
+                if not base.startswith('https://'):
+                    return self.send_json(400, {'error':'The Akamai endpoint must use HTTPS.'})
+                req=request.Request(base+'/models',headers={'Authorization':'Bearer '+conf['OPENAI_API_KEY']},method='GET')
+                with request.urlopen(req,timeout=20) as response:
+                    info=json.loads(response.read(100000))
+                aliases=[m['id'] for m in info.get('data',[]) if isinstance(m,dict) and 'id' in m]
+                return self.send_json(200,{'ok':True,'models':aliases,'message':'Akamai API key verified. Models: '+(', '.join(aliases) if aliases else 'service responded.')})
+            except error.HTTPError as exc:
+                return self.send_json(502,{'ok':False,'error':'Akamai returned HTTP '+str(exc.code)+'. Verify the team key and service status.'})
+            except (error.URLError,TimeoutError) as exc:
+                return self.send_json(502,{'ok':False,'error':'Could not connect to Akamai. Check Wi-Fi, DNS, or workshop access.'})
+            except (ValueError,KeyError) as exc:
+                return self.send_json(502,{'ok':False,'error':'Akamai sent an unexpected response.'})
         if path == '/api/dashboard':
             with DATA_LOCK:
                 data = SESSIONS[sid]
             return self.send_json(200, data)
-        if path in ('/','/static/styles.css','/static/app.js'):
+        if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js'):
             file = BASE/'static'/('index.html' if path=='/' else path.removeprefix('/static/'))
             return self.send_bytes(200,file.read_bytes(),{'html':'text/html; charset=utf-8','css':'text/css; charset=utf-8','js':'text/javascript; charset=utf-8'}[file.suffix.lstrip('.')] if file.suffix!='.html' else 'text/html; charset=utf-8')
         return self.send_json(404,{'error':'Not found'})

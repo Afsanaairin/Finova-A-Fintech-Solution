@@ -23,7 +23,7 @@
     <div class="sidebar-bottom"><div class="mini-indicator"><span class="dot"></span><span id="ai-connection">Offline analysis ready</span></div><p>Akamai-compatible financial intelligence</p></div>
   </aside>
   <main class="main">
-    <header class="topbar"><div class="breadcrumbs">WORKSPACE <span>/</span> <strong id="page-crumb">Overview</strong></div><div class="top-actions"><span class="top-pill">⚡ Hack Midwest 2026</span><span class="avatar">F</span></div></header>
+    <header class="topbar"><div class="breadcrumbs">WORKSPACE <span>/</span> <strong id="page-crumb">Overview</strong></div><div class="top-actions"><span id="user-email" class="user-email hidden"></span><button id="login-btn" class="button button-primary" type="button">Log in</button><button id="logout-btn" class="button button-muted hidden" type="button">Log out</button></div></header>
     <div class="content">
       <div class="hero"><div><div class="eyebrow">THE FUTURE OF FINANCIAL CLARITY</div><h1 id="page-title">A clearer picture of your business.</h1><p id="page-subtitle">From transactions to foresight. Understand what changed, what matters, and what comes next.</p></div><div class="hero-art" aria-hidden="true"><div class="hero-circle c1"></div><div class="hero-circle c2"></div><div class="hero-circle c3"></div><div class="hero-spark">✦</div></div></div>
       <div id="alert" class="notice hidden" role="status"></div>
@@ -89,6 +89,24 @@
     </div>
   </main>
 </div>
+<dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title" aria-describedby="login-description">
+  <div class="login-heading">
+    <div><span class="eyebrow">WELCOME TO FINOVA</span><h2 id="login-title">Log in</h2></div>
+    <button id="close-login-btn" class="login-close" type="button" aria-label="Close login dialog">&times;</button>
+  </div>
+  <p id="login-description">Enter your email to receive a one-time login code. No password needed.</p>
+  <form id="send-code-form" class="login-form">
+    <label for="login-email">Email address</label>
+    <input id="login-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" maxlength="254" required>
+    <button id="send-code-btn" class="button button-primary" type="submit">Send login code</button>
+  </form>
+  <form id="verify-code-form" class="login-form hidden">
+    <label for="login-code">6-digit code</label>
+    <input id="login-code" name="code" class="login-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="000000" required>
+    <button id="verify-code-btn" class="button button-primary" type="submit">Log in</button>
+  </form>
+  <p id="login-message" class="login-message" role="status" aria-live="polite"></p>
+</dialog>
 <script src="/static/wrapped.js" defer></script>
 <script src="/static/app.js" defer></script>
 </body></html>

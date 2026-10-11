@@ -75,6 +75,69 @@ python3 run.py
 - Without the key, the dashboard, forecasts, upload, anomaly rules, scenarios, and local Q&A work normally.
 - If your request is rejected or the service is offline, FINOVA shows an error. It does not pretend a remote model responded.
 
+## Passwordless email login
+
+The top-right **Log in** button accepts an email address and sends a six-digit
+one-time code. Users do not need a password, and recipient addresses are not
+restricted to Gmail. The dashboard remains available as an anonymous demo.
+
+To enable delivery, configure the following values in the existing `.env` file
+without replacing the Akamai settings:
+
+```dotenv
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-account@gmail.com
+SMTP_APP_PASSWORD=your-google-app-password
+SMTP_FROM=your-account@gmail.com
+AUTH_CODE_TTL_SECONDS=300
+AUTH_SESSION_TTL_SECONDS=604800
+COOKIE_SECURE=false
+PUBLIC_ORIGIN=
+```
+
+Enable Google 2-Step Verification on the sending account, then create an
+[app password](https://support.google.com/accounts/answer/185833?hl=en).
+Use that app password without its grouping spaces, rather than the account's
+normal password. Leave `SMTP_FROM` blank to use `SMTP_USER`, or set it to the
+same sending address. Gmail uses STARTTLS on port 587. Delivery remains subject
+to Gmail sending limits and recipient spam filters.
+
+Restart the server after setup. Click **Log in**, request a code, check the inbox
+and spam folder, and enter the code. Codes expire after five minutes by default,
+are valid once, and allow at most five incorrect attempts. Sending keeps a
+60-second resend cooldown for each email address, with no application-level
+hourly cap per email or IP. Different addresses can request codes independently.
+
+Authentication uses an HttpOnly cookie and stores users, verification challenges,
+rate limits, and session hashes in `data/auth.sqlite3`, which is ignored by Git.
+Login sessions survive server restarts and expire after seven days by default.
+Uploaded financial data still belongs to the existing browser demo session;
+logging in does not synchronize it across devices or persist it across restarts.
+Logging out deletes the current financial demo session, clears the user's email,
+uploaded results, AI answers, artwork and playback state from the page, and opens
+a fresh default demo. Existing tabs in the same browser are notified to reset,
+and pages restored from browser history reload the current server state. Pending
+uploads cannot restore a session that was retired during logout.
+
+When serving through an HTTPS reverse proxy, set `COOKIE_SECURE=true` and set
+`PUBLIC_ORIGIN` to the exact browser origin, such as `https://finova.example.com`.
+For local HTTP development, keep `COOKIE_SECURE=false` and `PUBLIC_ORIGIN` blank.
+Keep the `.env` file and authentication database private.
+
+Run the local test suite without sending real email:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+If Node.js is available, check the login UI event handlers as well:
+
+```bash
+node tests/test_auth_ui.js
+node tests/test_story_reset.js
+```
+
 ## 3 — Upload file format
 
 ### Excel

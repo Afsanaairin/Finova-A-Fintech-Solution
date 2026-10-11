@@ -2,13 +2,18 @@
 let DATA = null;
 let selectedAnomaly = null;
 let anomalyFilter = 'all';
+let clientSessionVersion = 0;
+let initialLayoutHTML = null;
+const pendingRequests = new Set();
+const SESSION_ENDED_MESSAGE = 'This session has ended.';
+const LOGOUT_EVENT_KEY = 'finova_logout';
 const $ = id => document.getElementById(id);
 const fmt = x => '$' + Math.abs(Number(x||0)).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
 const signed = x => (Number(x)<0 ? '−' : '') + fmt(x);
 const text = (id,value) => {$(id).textContent = String(value)};
 const friendlyMonth = iso => new Date(iso+'-01T00:00:00').toLocaleString('en-US',{month:'short',year:'numeric'});
 const escapeHTML = value => String(value??'').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-function notify(message, bad=false) { const box=$('alert');box.textContent=message;box.classList.remove('hidden');box.classList.toggle('error',bad);setTimeout(()=>box.classList.add('hidden'),7000);}
+function notify(message, bad=false) { if(message===SESSION_ENDED_MESSAGE)return;const box=$('alert');box.textContent=message;box.classList.remove('hidden');box.classList.toggle('error',bad);setTimeout(()=>box.classList.add('hidden'),7000);}
 const pageInfo = {anomalies:['Anomaly Explorer','Find what changed. Understand why it matters.','Evidence-backed cost and invoice investigations.'],overview:['Overview','A clearer picture of your business.','From transactions to foresight. Understand what changed, what matters, and what comes next.'],forecast:['Forecast & Scenarios','Plan for what comes next.','Explore the cash implications of tomorrow’s decisions.'],subscriptions:['Subscriptions','Make every recurring dollar count.','Understand recurring expenses and price changes.'],transactions:['Transactions','Your money, line by line.','Transparent transaction analysis with an audit trail.'],wrapped:['Business Wrapped','Your financial story, reimagined.','FINOVA turns numbers into a meaningful business recap.']};
 function switchPage(id){
  document.querySelectorAll('.page').forEach(el=>el.classList.toggle('hidden',el.id!==id));
@@ -17,7 +22,229 @@ function switchPage(id){
  if(id==='overview'||id==='forecast') requestAnimationFrame(drawCharts);
  window.scrollTo({top:0,behavior:'smooth'});
 }
-async function getJSON(url,options){const r=await fetch(url,options);let d;try{d=await r.json()}catch{throw new Error('Server returned a non-JSON response.')}if(!r.ok)throw new Error(d.error||'Request failed');return d;}
+async function getJSON(url, options) {
+  const controller = new AbortController();
+  const version = clientSessionVersion;
+  pendingRequests.add(controller);
+  try {
+    const response = await fetch(url, {...options, cache: 'no-store', signal: controller.signal});
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error('Server returned a non-JSON response.');
+    }
+    if (version !== clientSessionVersion) throw new Error(SESSION_ENDED_MESSAGE);
+    if (!response.ok) {
+      const error = new Error(payload.error || 'Request failed');
+      error.status = response.status;
+      error.retryAfter = Number(payload.retry_after || response.headers.get('Retry-After') || 0);
+      throw error;
+    }
+    return payload;
+  } catch (error) {
+    if (controller.signal.aborted || version !== clientSessionVersion) {
+      const cancelled = new Error(SESSION_ENDED_MESSAGE);
+      cancelled.name = 'AbortError';
+      throw cancelled;
+    }
+    throw error;
+  } finally {
+    pendingRequests.delete(controller);
+  }
+}
+
+let authBusy = false;
+let loginEmail = '';
+const resendAvailableByEmail = new Map();
+let resendTimer = null;
+
+function emailCooldownKey(email) {
+  const value = email.trim();
+  const at = value.lastIndexOf('@');
+  if (at < 0) return value;
+  return value.slice(0, at + 1) + value.slice(at + 1).toLowerCase();
+}
+
+function getResendAvailableAt(email) {
+  return resendAvailableByEmail.get(emailCooldownKey(email)) || 0;
+}
+
+function renderAuth(user) {
+  $('login-btn').classList.toggle('hidden', Boolean(user));
+  $('logout-btn').classList.toggle('hidden', !user);
+  $('user-email').classList.toggle('hidden', !user);
+  $('user-email').textContent = user ? user.email : '';
+  $('user-email').title = user ? user.email : '';
+}
+
+function loginMessage(message, bad = false) {
+  $('login-message').textContent = message;
+  $('login-message').classList.toggle('error', bad);
+}
+
+function updateAuthControls() {
+  const availableAt = getResendAvailableAt($('login-email').value);
+  const seconds = Math.max(0, Math.ceil((availableAt - Date.now()) / 1000));
+  $('send-code-btn').disabled = authBusy || seconds > 0;
+  $('send-code-btn').textContent = authBusy ? 'Please wait...' : seconds > 0
+    ? `Resend in ${seconds}s` : loginEmail ? 'Resend login code' : 'Send login code';
+  $('verify-code-btn').disabled = authBusy;
+  $('verify-code-btn').textContent = authBusy ? 'Please wait...' : 'Log in';
+  $('login-email').disabled = authBusy;
+  $('login-code').disabled = authBusy;
+  if (seconds > 0 && resendTimer === null) {
+    resendTimer = setInterval(updateAuthControls, 1000);
+  }
+  if (!seconds && resendTimer !== null) {
+    clearInterval(resendTimer);
+    resendTimer = null;
+  }
+}
+
+function startResendCooldown(email, seconds) {
+  const duration = Number(seconds);
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  resendAvailableByEmail.set(emailCooldownKey(email), Date.now() + duration * 1000);
+  updateAuthControls();
+}
+
+function returnToInitialState(broadcast = false) {
+  // Discard late responses before clearing any user-specific state.
+  clientSessionVersion += 1;
+  pendingRequests.forEach(controller => controller.abort());
+  pendingRequests.clear();
+  DATA = null;
+  selectedAnomaly = null;
+  anomalyFilter = 'all';
+  loginEmail = '';
+  authBusy = false;
+  resendAvailableByEmail.clear();
+  if (resendTimer !== null) clearInterval(resendTimer);
+  resendTimer = null;
+  window.FINOVAStory.reset();
+  const layout = document.querySelector('.layout');
+  if (layout && initialLayoutHTML !== null) layout.innerHTML = initialLayoutHTML;
+  $('login-dialog').close();
+  $('login-email').value = '';
+  $('login-code').value = '';
+  $('verify-code-form').classList.add('hidden');
+  loginMessage('');
+  renderAuth(null);
+  updateAuthControls();
+  if (broadcast) {
+    try {
+      // Share only an event timestamp, never the user's email or financial data.
+      window.localStorage.setItem(LOGOUT_EVENT_KEY, String(Date.now()));
+    } catch {
+      // Logout still succeeds when browser storage is unavailable.
+    }
+  }
+  window.location.replace('/');
+}
+
+async function refreshAuth() {
+  try {
+    const result = await getJSON('/api/auth/me');
+    renderAuth(result.user);
+  } catch (error) {
+    notify(error.message, true);
+  }
+}
+
+function initAuth() {
+  if (initialLayoutHTML === null) {
+    initialLayoutHTML = document.querySelector('.layout').innerHTML;
+  }
+  window.addEventListener('storage', event => {
+    if (event.key === LOGOUT_EVENT_KEY && event.newValue !== null) returnToInitialState();
+  });
+  window.addEventListener('pageshow', event => {
+    if (event.persisted) returnToInitialState();
+  });
+  const dialog = $('login-dialog');
+  $('login-btn').addEventListener('click', () => {
+    updateAuthControls();
+    dialog.showModal();
+    (loginEmail ? $('login-code') : $('login-email')).focus();
+  });
+  $('close-login-btn').addEventListener('click', () => dialog.close());
+  $('login-email').addEventListener('input', () => {
+    if ($('login-email').value.trim() !== loginEmail) {
+      loginEmail = '';
+      $('verify-code-form').classList.add('hidden');
+      $('login-code').value = '';
+      loginMessage('');
+    }
+    updateAuthControls();
+  });
+  $('send-code-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const email = $('login-email').value.trim();
+    if (authBusy || Date.now() < getResendAvailableAt(email)) return;
+    authBusy = true;
+    updateAuthControls();
+    loginMessage('Sending your login code...');
+    try {
+      const result = await getJSON('/api/auth/send-code', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email})
+      });
+      loginEmail = email;
+      $('login-code').value = '';
+      $('verify-code-form').classList.remove('hidden');
+      loginMessage(result.message || 'Code sent. Check your inbox and spam folder.');
+      startResendCooldown(email, result.retry_after || 60);
+    } catch (error) {
+      loginMessage(error.message, true);
+      startResendCooldown(email, error.retryAfter);
+    } finally {
+      authBusy = false;
+      updateAuthControls();
+      if (loginEmail && dialog.open) $('login-code').focus();
+    }
+  });
+  $('verify-code-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (authBusy || !loginEmail) return;
+    authBusy = true;
+    updateAuthControls();
+    loginMessage('Verifying your code...');
+    try {
+      const result = await getJSON('/api/auth/verify-code', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email: loginEmail, code: $('login-code').value.trim()})
+      });
+      renderAuth(result.user);
+      dialog.close();
+      $('login-code').value = '';
+      $('verify-code-form').classList.add('hidden');
+      loginEmail = '';
+      loginMessage('');
+      notify('You are now logged in.');
+    } catch (error) {
+      loginMessage(error.message, true);
+    } finally {
+      authBusy = false;
+      updateAuthControls();
+    }
+  });
+  $('logout-btn').addEventListener('click', async () => {
+    const button = $('logout-btn');
+    button.disabled = true;
+    try {
+      await getJSON('/api/auth/logout', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      returnToInitialState(true);
+    } catch (error) {
+      notify(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  refreshAuth();
+}
 function lineChart(host,rows, includeForecast=false){
  const el=$(host);if(!rows.length){el.textContent='Not enough data for this chart.';return;}
  const W=760,H=295,pL=65,pT=17,pR=16,pB=43,chartW=W-pL-pR,chartH=H-pT-pB;
@@ -111,6 +338,7 @@ async function ask(question){
  }catch(e){output.textContent='FINOVA could not answer: '+e.message;}
 }
 window.addEventListener('DOMContentLoaded',()=>{
+ initAuth();
  document.querySelectorAll('.nav-link').forEach(b=>b.addEventListener('click',()=>switchPage(b.dataset.view)));
  $('file-input').addEventListener('change',e=>uploadFile(e.target.files[0]));
  $('reset-btn').addEventListener('click',async()=>{try{const res=await getJSON('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});DATA=res.summary;text('loaded-file','Demo workbook: finova.xlsx');window.FINOVAStory.resetArt();render();notify('Demo workbook restored.')}catch(e){notify(e.message,true)}});

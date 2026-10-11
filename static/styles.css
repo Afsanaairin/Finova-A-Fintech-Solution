@@ -73,3 +73,20 @@
 .evidence-table{font-size:10px}.evidence-table th,.evidence-table td{padding:10px 8px}.evidence-table td small{display:block;color:#7c899c;font-size:9px;margin-top:4px}
 .anomaly-action{background:#e9f8f4;border:1px solid #cbede4;border-radius:12px;padding:14px;margin:20px 0 15px}.anomaly-action strong{color:#146e61}.anomaly-action p{margin-top:5px}
 @media(max-width:1100px){.anomaly-workspace{grid-template-columns:1fr}}
+
+.user-email{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#43526a}
+.login-dialog{width:min(420px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow-y:auto;border:1px solid var(--line);border-radius:18px;padding:28px;color:var(--ink);background:#fff;box-shadow:0 24px 80px #101c3740}
+.login-dialog::backdrop{background:#101c3766}
+.login-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.login-heading h2{margin:7px 0 0;font-size:26px;letter-spacing:-.6px}
+.login-close{display:grid;place-items:center;flex:none;width:34px;height:34px;border:0;border-radius:9px;background:#f1f4f9;color:#43526a;font-size:24px}
+.login-close:hover{background:#e5eaf3}
+.login-dialog>p{font-size:13px;color:#697b8d;line-height:1.6}
+.login-form{display:grid;gap:10px;margin-top:20px}
+.login-form label{font-size:12px;font-weight:700;color:#344565}
+.login-form input{width:100%;min-width:0;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink)}
+.login-form input:focus-visible,.login-close:focus-visible,.top-actions button:focus-visible{outline:3px solid #1db7a2;outline-offset:3px}
+.login-form .login-code{letter-spacing:6px;font-size:20px;text-align:center}
+.login-dialog .login-message{min-height:21px;margin-bottom:0;color:#159b89;font-size:12px}
+.login-dialog .login-message.error{color:#9b3131}
+@media(max-width:760px){.top-actions{gap:8px}.user-email{max-width:100px}.top-actions .button{padding:8px 10px}.login-dialog{padding:22px}.breadcrumbs{letter-spacing:.5px;font-size:10px}.breadcrumbs span{padding:0 6px}}

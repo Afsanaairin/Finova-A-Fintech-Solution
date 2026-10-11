@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import request, error
 from urllib.parse import urlsplit
 
+from auth import AuthError, AuthService
 from finance import analyze
 from xlsx_reader import read_data
 
@@ -40,6 +41,9 @@ def akamai_configured():
     v = config()
     key = v.get('OPENAI_API_KEY','')
     return bool(key and key.startswith('hk_') and 'paste' not in key.lower() and 'your_' not in key.lower() and len(key) > 8)
+
+
+AUTH = AuthService(BASE / 'data' / 'auth.sqlite3', config)
 
 
 def call_akamai(path, payload, timeout=35):
@@ -175,12 +179,103 @@ class Handler(BaseHTTPRequestHandler):
         except cookies.CookieError:
             pass
         sid = cookie['finova_demo'].value if 'finova_demo' in cookie else ''
-        if not sid or sid not in SESSIONS:
-            sid = secrets.token_urlsafe(24)
-            with DATA_LOCK:
+        with DATA_LOCK:
+            if not sid or sid not in SESSIONS:
+                sid = secrets.token_urlsafe(24)
                 SESSIONS[sid] = DEFAULT_RESULT
         self._set_cookie = sid
         return sid
+
+    def _auth_token(self):
+        cookie = cookies.SimpleCookie()
+        try:
+            cookie.load(self.headers.get('Cookie', ''))
+        except cookies.CookieError:
+            return ''
+        return cookie['finova_auth'].value if 'finova_auth' in cookie else ''
+
+    def _auth_cookie(self, token, max_age):
+        secure = config().get('COOKIE_SECURE', 'false').lower() == 'true'
+        self._set_auth_cookie = (
+            f'finova_auth={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}'
+            + ('; Secure' if secure else '')
+        )
+
+    def _auth_origin_allowed(self):
+        # Same-origin browser requests are accepted; command-line clients may omit Origin.
+        if self.headers.get('Sec-Fetch-Site', '').lower() == 'cross-site':
+            return False
+        origin = self.headers.get('Origin')
+        if origin is None:
+            return True
+        conf = config()
+        scheme = 'https' if conf.get('COOKIE_SECURE', 'false').lower() == 'true' else 'http'
+        expected = conf.get('PUBLIC_ORIGIN', '').strip() or f"{scheme}://{self.headers.get('Host', '')}"
+        try:
+            actual_url, expected_url = urlsplit(origin), urlsplit(expected)
+            if actual_url.scheme not in ('http', 'https') or not actual_url.hostname:
+                return False
+            if actual_url.username or actual_url.password or actual_url.path or actual_url.query or actual_url.fragment:
+                return False
+            actual_port = actual_url.port or (443 if actual_url.scheme == 'https' else 80)
+            expected_port = expected_url.port or (443 if expected_url.scheme == 'https' else 80)
+            return (actual_url.scheme, actual_url.hostname, actual_port) == (
+                expected_url.scheme, expected_url.hostname, expected_port
+            )
+        except ValueError:
+            return False
+
+    def handle_auth_post(self, path):
+        if path not in ('/api/auth/send-code', '/api/auth/verify-code', '/api/auth/logout'):
+            return self.send_json(404, {'error': 'Unknown authentication endpoint.'})
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            return self.send_json(400, {'error': 'Invalid request length.'})
+        if length <= 0:
+            return self.send_json(400, {'error': 'A JSON request body is required.'})
+        if length > 4096:
+            # Consume a bounded body so small rejected requests do not reset Windows sockets.
+            self.rfile.read(min(length, 4097))
+            return self.send_json(413, {'error': 'Authentication request is too large.'})
+        body = self.rfile.read(length)
+        if not self._auth_origin_allowed():
+            return self.send_json(403, {'error': 'Authentication requests must come from this website.'})
+        if self.headers.get('Content-Type', '').split(';', 1)[0].strip().lower() != 'application/json':
+            return self.send_json(415, {'error': 'Expected an application/json request.'})
+        try:
+            payload = json.loads(body.decode('utf-8'))
+            if not isinstance(payload, dict):
+                return self.send_json(400, {'error': 'Expected a JSON object.'})
+            if path == '/api/auth/send-code':
+                response = AUTH.send_code(payload.get('email', ''), self.client_address[0])
+            elif path == '/api/auth/verify-code':
+                result = AUTH.verify_code(
+                    payload.get('email', ''), payload.get('code', ''), self._auth_token()
+                )
+                self._auth_cookie(result['token'], result['max_age'])
+                response = {'ok': True, 'user': result['user']}
+            else:
+                AUTH.logout(self._auth_token())
+                self._auth_cookie('', 0)
+                # Retire uploaded data and start a fresh anonymous demo session.
+                with DATA_LOCK:
+                    SESSIONS.pop(self._set_cookie, None)
+                    self._set_cookie = secrets.token_urlsafe(24)
+                    SESSIONS[self._set_cookie] = DEFAULT_RESULT
+                response = {'ok': True, 'user': None}
+            return self.send_json(200, response)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_json(400, {'error': 'Invalid JSON request.'})
+        except AuthError as exc:
+            response = {'error': exc.message}
+            if exc.retry_after:
+                self._retry_after = exc.retry_after
+                response['retry_after'] = exc.retry_after
+            return self.send_json(exc.status, response)
+        except Exception:
+            # Authentication failures must never expose email credentials or challenge values.
+            return self.send_json(500, {'error': 'Authentication is temporarily unavailable. Please try again.'})
 
     def send_bytes(self, status, body, content_type='application/json; charset=utf-8'):
         self.send_response(status)
@@ -192,6 +287,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         if getattr(self,'_set_cookie',None):
             self.send_header('Set-Cookie', f'finova_demo={self._set_cookie}; HttpOnly; SameSite=Lax; Path=/')
+        if getattr(self, '_set_auth_cookie', None):
+            self.send_header('Set-Cookie', self._set_auth_cookie)
+        if getattr(self, '_retry_after', None):
+            self.send_header('Retry-After', str(self._retry_after))
         self.end_headers()
         self.wfile.write(body)
 
@@ -201,6 +300,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         sid = self._session()
         path = urlsplit(self.path).path
+        if path == '/api/auth/me':
+            token = self._auth_token()
+            try:
+                user = AUTH.get_user(token)
+                if token and user is None:
+                    self._auth_cookie('', 0)
+                return self.send_json(200, {'ok': True, 'user': user})
+            except Exception:
+                return self.send_json(503, {'error': 'Authentication is temporarily unavailable. Please try again.'})
         if path == '/api/health':
             return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_key_loaded':akamai_configured(), 'akamai_connected':False,
                                        'mode':'Akamai key loaded; connection not verified' if akamai_configured() else 'Offline demo' })
@@ -225,7 +333,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(502,{'ok':False,'error':'Akamai sent an unexpected response.'})
         if path == '/api/dashboard':
             with DATA_LOCK:
-                data = SESSIONS[sid]
+                data = SESSIONS.get(sid)
+            if data is None:
+                return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
             return self.send_json(200, data)
         if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js'):
             file = BASE/'static'/('index.html' if path=='/' else path.removeprefix('/static/'))
@@ -235,6 +345,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         sid = self._session()
         path = urlsplit(self.path).path
+        if path.startswith('/api/auth/'):
+            return self.handle_auth_post(path)
         try:
             length = int(self.headers.get('Content-Length', '0'))
             if length <= 0 or length > MAX_UPLOAD:
@@ -253,17 +365,27 @@ class Handler(BaseHTTPRequestHandler):
                 raw = part.get_payload(decode=True)
                 new_result = analyze(read_data(raw,filename))
                 with DATA_LOCK:
-                    SESSIONS[sid] = new_result
+                    active = sid in SESSIONS
+                    if active:
+                        SESSIONS[sid] = new_result
+                if not active:
+                    return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                 return self.send_json(200,{'ok':True,'summary':new_result})
             if path == '/api/reset':
                 with DATA_LOCK:
-                    SESSIONS[sid] = DEFAULT_RESULT
+                    active = sid in SESSIONS
+                    if active:
+                        SESSIONS[sid] = DEFAULT_RESULT
+                if not active:
+                    return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                 return self.send_json(200,{'ok':True,'summary':DEFAULT_RESULT})
             if path not in ('/api/ask','/api/cover'):
                 return self.send_json(404,{'error':'Unknown endpoint.'})
             payload = json.loads(body.decode('utf-8'))
             with DATA_LOCK:
-                result = SESSIONS[sid]
+                result = SESSIONS.get(sid)
+            if result is None:
+                return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
             if path == '/api/ask':
                 question = str(payload.get('question','')).strip()[:500]
                 if not question:

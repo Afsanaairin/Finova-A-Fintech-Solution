@@ -152,7 +152,7 @@ function makeMusic(){
  if(!$('story-sound').checked)return null;
  try{
   audioCtx=new (window.AudioContext||window.webkitAudioContext)();audioDestination=audioCtx.createMediaStreamDestination();
-  const master=audioCtx.createGain();master.gain.value=.21;master.connect(audioCtx.destination);master.connect(audioDestination);
+  const master=audioCtx.createGain();master.gain.value=4.0;master.connect(audioCtx.destination);master.connect(audioDestination);
   const now=audioCtx.currentTime+.08;
   const notes=[196,247,294,392,330,294,247,220,196,247,330,440,392,330,294,247];
   const total=seconds*8;

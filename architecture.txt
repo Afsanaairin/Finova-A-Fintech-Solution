@@ -1,0 +1,153 @@
+FINOVA (FINANCE INNOVATION) — ARCHITECTURE AND DATA FLOW
+Hack Midwest 2026 | Code audit: 2026-10-11
+Site: https://finova-intelligence.duckdns.org/
+Repo: https://github.com/Afsanaairin/Finova-A-Fintech-Solution
+
+=====================================================================
+1. DEVELOPMENT, HOSTING AND NETWORK
+=====================================================================
+
+WINDOWS VS CODE / TEAM DEVELOPMENT
+    |
+    | git push (only after commits and local tests)
+    v
+GITHUB main
+    | Afsanaairin/Finova-A-Fintech-Solution
+    | manual pull on Linode, tests, then deploy approved commit
+    v
+AKAMAI LINODE: Debian 12 / debian-us-ord
+    |
+    +-- /root/finova-source : GIT CHECKOUT (not the running site)
+    |           |
+    |           +-- git archive HEAD after test and review
+    |                       v
+    +-- /opt/finova       : DEPLOYED CODE / STATIC CONTENT
+    |           |
+    |           +-- systemd finova.service, user finova
+    |           +-- run.py -> server.py -> HTTP 127.0.0.1:8000
+    |           +-- data/finova.xlsx: fictional workbook
+    |           +-- data/auth.sqlite3: new durable email-auth state
+    |                   REQUIRES controlled write permission
+    |
+    +-- /etc/finova/finova.env      : PRIVATE AI/SMTP/proxy settings
+    +-- /etc/finova/proxy-secret.conf  : PRIVATE nginx proxy token
+    +-- /etc/finova/finova.htpasswd   : hashed operator passwords
+    +-- /etc/nginx/sites-available/finova : nginx HTTPS site
+    +-- /etc/letsencrypt/live/finova-intelligence.duckdns.org/
+
+PUBLIC BROWSER
+    |
+    | https://finova-intelligence.duckdns.org/
+    v
+DUCKDNS DNS RECORD (A -> Linode public IPv4)
+    |
+    v
+AKAMAI CLOUD FIREWALL on server public interface
+    |-- 443 TCP : HTTPS (public)
+    |-- 80  TCP : ACME challenge and HTTP redirect
+    |-- 22  TCP : SSH limited to authorized client IP /32
+    |-- 8000    : NEVER public; default inbound DROP
+    v
+NGINX: Let's Encrypt TLS, operator Basic Auth, limits
+    |-- verifies Basic Auth operator
+    |-- forwards X-Finova-User, X-Forwarded-Proto,
+    |   X-Finova-Proxy-Token (private nginx configuration)
+    |-- strips browser Authorization before backend
+    v
+PYTHON FINOVA (loopback 127.0.0.1:8000)
+    |-- validates trusted proxy, Host/Origin/request marker
+    |-- serves browser SPA and API endpoints
+    v
+BUSINESS ANALYSIS / REPORTS / LOGIN
+
+NOTE: Initial hosted screenshot/28 tests represented an EARLIER
+      deployed version. The updated ZIP passed 95 local Python tests
+      but the email-login/SQLite upgrade has NOT been verified live.
+
+=====================================================================
+2. INPUT, ANALYSIS AND OUTPUT
+=====================================================================
+
+FINANCIAL DATA
+    +-- Synthetic default workbook (.xlsx)
+    +-- Uploaded CSV or Excel workbook
+    +-- Uploaded PDF bank statement / customer invoice
+    |      +-- Poppler text extraction (optional install)
+    |      +-- Tesseract OCR for scans (optional install)
+    |      +-- user checks draft and confirms corrected rows
+    v
+INPUT VALIDATION
+    |-- xlsx_reader.py (CSV, XLSX ZIP/XML, bounded formats)
+    |-- pdf_reader.py (PDF/OCR preview, confirm/cancel)
+    v
+VERIFIED SESSION RECORDS
+    |-- Cash ledger transactions
+    |-- Invoiced revenue separately from collected cash
+    |-- Expense/payroll sheets not double-counted
+    v
+FINANCIAL ENGINE: finance.py
+    |-- Cash in/out, net movement and estimates
+    |-- Category and subscription signals
+    |-- Overdue invoices as of dataset reporting date
+    |-- Illustrative 3-month forecast + what-if inputs
+    +-- investigations.py: explainable five-question findings
+    v
+USER OUTPUT
+    |-- static/app.js: KPI cards, charts, lists, Q&A, navigation
+    |-- reports.py + report_pdf.py: downloadable PDF reports
+    |-- static/wrapped.js: client-side story / video export
+    +-- static/pdf-upload.js and reports.js: review/report UIs
+
+OPTIONAL EXTERNAL EXPLANATION
+    |-- server.py sends calculated/bounded financial summary
+    |-- HTTPS -> https://ws.akamai-workshops.com/v1
+    |      +-- hackathon-chat: optional narrative explanation
+    |      +-- hackathon-image: optional artwork
+    +-- offline_answer(): honest deterministic fallback
+
+Cash movement != profit. Alerts != fraud conclusions.
+Forecasts are heuristics, NOT trained ML predictions.
+
+=====================================================================
+3. NEW TWO-STAGE LOGIN AND STATE
+=====================================================================
+
+Browser -> nginx operator username/password (Basic Auth)
+        -> FINOVA backend checks shared proxy token
+        -> GET /api/auth/me checks email-login cookie
+        -> POST /api/auth/send-code
+              -> SMTP STARTTLS -> authorized Gmail sender
+        -> POST /api/auth/verify-code
+              -> SQLite checks hashed code, creates session
+              -> HttpOnly Secure login cookie
+        -> dashboard/financial API bound to login identity
+        -> POST /api/auth/logout revokes session
+
+Persistent on server: /opt/finova/data/auth.sqlite3
+    (identities, challenge hashes, token hashes, send events)
+    SQLite WAL sidecars require writable DIRECTORY.
+    Old systemd ProtectSystem=strict needs ReadWritePaths exception.
+    See README_CONFIGURATION.md Part H BEFORE deploying new source.
+
+Financial uploads: server-memory sessions, cleared on logout/restart.
+PDF extraction: private temporary data, cleaned after processing.
+
+=====================================================================
+4. MANUAL RELEASE PROCEDURE
+=====================================================================
+
+1. Finish features and tests locally; merge GitHub main.
+2. SSH with personal private key to the Akamai Linode.
+3. /root/finova-source: git pull --ff-only origin main.
+4. Test source, review security and changed files.
+5. Back up current /opt/finova and private SQLite state.
+6. Stop finova; deploy reviewed tracked code to /opt/finova.
+7. Ensure correct data ownership and systemd writable exception.
+8. Start finova; verify backend, email login and user features.
+9. Browser at SAME DuckDNS + HTTPS URL, hard refresh as needed.
+
+Git push alone does NOT deploy the public site.
+Domain, TLS, nginx and firewall normally remain in place on updates.
+
+Security scope: restricted fictional-data hackathon demo; no real
+financial records without a separate privacy/security/hosting review.

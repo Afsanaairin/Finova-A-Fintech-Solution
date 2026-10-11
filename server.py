@@ -219,7 +219,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(403, {'error': 'Unrecognized request host.'})
             return False
         origin = self.headers.get('Origin')
-        if (origin is not None and origin != expected_origin) or self.headers.get('Sec-Fetch-Site') == 'cross-site':
+        # Opening a link from another site is a legitimate top-level navigation.
+        # Only the static home page gets this exception; API requests, POSTs,
+        # embeds and mismatched Origins still fail the cross-site check.
+        home_navigation = (self.command == 'GET' and urlsplit(self.path).path == '/'
+                           and self.headers.get('Sec-Fetch-Mode') == 'navigate'
+                           and self.headers.get('Sec-Fetch-Dest') == 'document')
+        cross_site = self.headers.get('Sec-Fetch-Site') == 'cross-site'
+        if (origin is not None and origin != expected_origin) or (cross_site and not home_navigation):
             self.send_json(403, {'error': 'Cross-site requests are not allowed.'})
             return False
         # Cross-origin forms cannot set this header. No CORS/OPTIONS grant is

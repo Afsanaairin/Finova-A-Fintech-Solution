@@ -1,172 +1,101 @@
-# FINOVA · Finance Innovation
-**Financial Intelligence. Smarter Decisions.**
+# FINOVA — Finance Innovation
 
-FINOVA is a working Hack Midwest 2026 MVP for turning business financial records into meaningful financial intelligence. You can run it locally on **Windows, macOS, or Linux** with Python 3.10+ and **no third-party Python packages**.
+**Financial intelligence that helps businesses understand their numbers and decide what to do next.**
 
-## The first version already works
+[Live FINOVA demo](https://finova-intelligence.duckdns.org/) · [GitHub repository](https://github.com/Afsanaairin/Finova-A-Fintech-Solution) · Hack Midwest 2026
 
-- Open a visual dashboard containing 33 months of fictional business data from `data/finova.xlsx`.
-- Upload your own **.xlsx** workbook, **.csv** transactions file, or **.pdf** bank statement/customer invoice. Review PDF records before analysis; PDF extraction requires the optional tools below.
-- Analyze cash receipts, payments, net cash movement, categories, and invoice-based revenue separately.
-- Detect unusually high category spending, subscription price increases, and late invoices.
-- Explore an illustrative three-month cash and invoiced-revenue forecast with a what-if calculator.
-- Review a five-service subscription register and a searchable transaction ledger.
-- Ask financial questions: offline rule-based answers work without credentials, with **Akamai `hackathon-chat`** used when your team's key is configured.
-- Generate optional **Akamai `hackathon-image`** decorative cover artwork for Business Wrapped (requires key).
+> **Important release distinction:** A previous tested FINOVA version was deployed successfully on Akamai Linode with DuckDNS and HTTPS. This updated GitHub ZIP adds email-code login, SQLite authentication, PDF intake, and downloadable reports. These changes still need to be deployed and verified on the public site. The live URL may not yet reflect all features listed in this README. Use fictional data for this restricted demo.
 
-## 1 — Extract and launch (no package installation)
+## Why FINOVA exists
 
-Download `FINOVA_Starter_v1.zip`, extract it, and **open a terminal inside the extracted `finova` folder** (the folder containing `run.py`).
+A business can know its balance and still not understand *why* spending rose, which invoices need follow-up, or how its cash position might change. Financial records are useful only when someone can understand them and act.
 
-### Windows — Command Prompt (CMD)
+**FINOVA turns records into understandable evidence and practical next steps.** Upload financial data, see what changed, inspect flagged patterns with supporting records, explore possible future cash conditions, ask questions, and share findings. The user should be able to make a better-informed business decision, not simply look at another dashboard.
+
+## What FINOVA does
+
+| Feature | Value to the user |
+| --- | --- |
+| **Overview** | Cash receipts, outgoing payments, net cash movement, estimated cash position, and invoice revenue presented separately. |
+| **Existing-file uploads** | `.xlsx`, `.csv`, and reviewed PDF bank statements/customer invoices (PDF tools are optional system packages). |
+| **Anomaly Explorer** | Spending spikes, subscription price changes and overdue invoices, with history, evidence and investigative next steps. |
+| **Downloadable PDF reports** | Investigation evidence and financial summaries that can be shared outside the app. |
+| **Forecast & Scenarios** | Illustrative three-month cash outlook and what-if controls, not guaranteed predictions. |
+| **Subscriptions** | Understand recurring charges and price increases. |
+| **Transactions** | Explore ledger records and search recent activity. |
+| **Ask FINOVA** | Calculated offline responses plus optional Akamai-hosted financial explanations. |
+| **Business Wrapped** | Play an animated financial story and export a video in the browser. |
+| **Email-code login (newer source)** | Users request a six-digit code to access their dashboard; the hosted demo also uses nginx Basic Auth. |
+
+![FINOVA sign-in screen](images/login_page.png)
+
+**Important distinctions:** Recorded cash receipts are not necessarily invoiced revenue. Net cash movement is not accounting profit. An anomaly is a signal to review, not proof of fraud. FINOVA does not move money or automatically cancel subscriptions.
+
+## Run FINOVA locally
+
+Requires **Python 3.10+**. Core app logic uses only standard-library modules; no pip installation is required for `.xlsx`, `.csv`, or the demo financial engine.
+
+Clone from GitHub (or extract the ZIP) and open a terminal in the directory containing `run.py`.
+
+**Windows CMD:**
 
 ```bat
-cd path\to\finova
 py -3 run.py
 ```
 
-If `py` isn't recognized, try `python run.py`. Use **CMD**, not PowerShell, if you follow the examples above.
-
-### macOS
+**macOS/Linux:**
 
 ```bash
-cd /path/to/finova
 python3 run.py
 ```
 
-### Linux
+Visit **http://127.0.0.1:8000**. Stop with `Ctrl+C`. To change the listening port locally, set `PORT=8001` in `.env` or your local environment and restart.
 
-```bash
-cd /path/to/finova
-python3 run.py
-```
+### Configure email-code login
 
-Open **http://127.0.0.1:8000** in your browser.
-
-No virtual environment or `pip install` is required. Stop with **Ctrl+C**. If you get *Address already in use*, edit `PORT=8000` in `.env` to `8001`, or set the `PORT` environment variable. `.env` is optional for basic operation.
-
-## 2 — Connect your Akamai hackathon key
-
-1. Copy `.env.example` to `.env` in the same directory as `run.py`.
-2. Replace `paste_your_team_key_here` with **your own team's** Akamai key (provided by workshop organizers).
-3. Keep the supplied endpoint and model aliases. Restart FINOVA.
+The updated version requires authorized SMTP settings to email login codes. Copy `.env.example` to the ignored `.env` file in the project folder and edit it privately.
 
 **Windows CMD:**
 
 ```bat
 copy .env.example .env
 notepad .env
-py -3 run.py
 ```
 
-**macOS / Linux:**
+**macOS/Linux:**
 
 ```bash
 cp .env.example .env
-nano .env
-python3 run.py
 ```
 
-`OPENAI_BASE_URL=https://ws.akamai-workshops.com/v1` points to the shared workshop service.
+For Gmail, use an account with app-password access and STARTTLS (`smtp.gmail.com`, port `587`). Configure `SMTP_USER`, `SMTP_APP_PASSWORD`, and `SMTP_FROM`. The code is six digits, normally expires after five minutes and establishes a seven-day session by default. Keep `COOKIE_SECURE=false`, `PUBLIC_ORIGIN=` blank for local HTTP. For HTTPS, use secure cookies and the exact public origin. Do **not** commit the `.env` file.
 
-- Chat uses **POST `/chat/completions`** with model `hackathon-chat`.
-- Cover image generation uses **POST `/images/generations`** with model `hackathon-image`, 512×512 PNG.
-- API keys are used **server-side only** and are never sent to the browser.
-- Without the key, the dashboard, forecasts, upload, anomaly rules, scenarios, and local Q&A work normally.
-- If your request is rejected or the service is offline, FINOVA shows an error. It does not pretend a remote model responded.
+### Optional Akamai workshop AI
 
-## Passwordless email login
-
-The top-right **Log in** button accepts an email address and sends a six-digit
-one-time code. Users do not need a password, and recipient addresses are not
-restricted to Gmail. The dashboard remains available as an anonymous demo.
-
-To enable delivery, configure the following values in the existing `.env` file
-without replacing the Akamai settings:
+Add an authorized Hack Midwest team inference key **to the same private `.env`**:
 
 ```dotenv
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-account@gmail.com
-SMTP_APP_PASSWORD=your-google-app-password
-SMTP_FROM=your-account@gmail.com
-AUTH_CODE_TTL_SECONDS=300
-AUTH_SESSION_TTL_SECONDS=604800
-COOKIE_SECURE=false
-PUBLIC_ORIGIN=
+OPENAI_BASE_URL=https://ws.akamai-workshops.com/v1
+OPENAI_API_KEY=YOUR_TEAM_KEY
 ```
 
-Enable Google 2-Step Verification on the sending account, then create an
-[app password](https://support.google.com/accounts/answer/185833?hl=en).
-Use that app password without its grouping spaces, rather than the account's
-normal password. Leave `SMTP_FROM` blank to use `SMTP_USER`, or set it to the
-same sending address. Gmail uses STARTTLS on port 587. Delivery remains subject
-to Gmail sending limits and recipient spam filters.
+The workshop key is **not** a Linode API token. Financial calculations, forecasts, reports and bounded offline Q&A work without it. Optional `hackathon-chat` and `hackathon-image` use server-side HTTPS requests; no API secret goes to the browser.
 
-Restart the server after setup. Click **Log in**, request a code, check the inbox
-and spam folder, and enter the code. Codes expire after five minutes by default,
-are valid once, and allow at most five incorrect attempts. Sending keeps a
-60-second resend cooldown for each email address, with no application-level
-hourly cap per email or IP. Different addresses can request codes independently.
+### Optional PDF/OCR tools
 
-Authentication uses an HttpOnly cookie and stores users, verification challenges,
-rate limits, and session hashes in `data/auth.sqlite3`, which is ignored by Git.
-Login sessions survive server restarts and expire after seven days by default.
-Uploaded financial data still belongs to the existing browser demo session;
-logging in does not synchronize it across devices or persist it across restarts.
-Logging out deletes the current financial demo session, clears the user's email,
-uploaded results, AI answers, artwork and playback state from the page, and opens
-a fresh default demo. Existing tabs in the same browser are notified to reset,
-and pages restored from browser history reload the current server state. Pending
-uploads cannot restore a session that was retired during logout.
-
-When serving through an HTTPS reverse proxy, set `COOKIE_SECURE=true` and set
-`PUBLIC_ORIGIN` to the exact browser origin, such as `https://finova.example.com`.
-For local HTTP development, keep `COOKIE_SECURE=false` and `PUBLIC_ORIGIN` blank.
-Keep the `.env` file and authentication database private.
-
-Run the local test suite without sending real email:
+PDFs need Poppler; scanned PDFs additionally need Tesseract. On Debian/Ubuntu:
 
 ```bash
-python -m unittest discover -s tests -v
+sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
 ```
 
-If Node.js is available, check the login UI event handlers as well:
+See the fictional PDFs under [`data/pdf_examples/`](data/pdf_examples/). The app proposes extracted records for users to review, correct and confirm; it does not treat OCR guesses as final facts. PDF input is capped at 12 MiB and 20 pages; additional row and processing limits apply.
 
-```bash
-node tests/test_auth_ui.js
-node tests/test_story_reset.js
-```
+## Data fields and calculations
 
-## 3 — Upload file format
+The synthetic [`data/finova.xlsx`](data/finova.xlsx) includes `Business Profile`, `Transactions`, `Revenue`, `Invoices`, `Operating Expenses`, `Vendors`, `Payroll`, `Subscriptions`, and `Monthly Summary`.
 
-### Excel
-
-The default workbook `data/finova.xlsx` contains:
-
-| Sheet | Purpose |
-| --- | --- |
-| `Business Profile` | Business name, opening cash, currency, synthetic-data note |
-| `Transactions` | **Canonical cash ledger**, including each posted receipt and outgoing payment |
-| `Revenue` | Invoiced **accrual sales**, linked by Invoice_ID |
-| `Invoices` | Customer invoices, due dates, outstanding receivables |
-| `Operating Expenses` | Source expense records; these are already included in Transactions |
-| `Vendors` | Vendor list |
-| `Payroll` | Source payroll; already included in Transactions |
-| `Subscriptions` | Registry of recurring software costs |
-| `Monthly Summary` | Reference totals, not re-added to financial ledger |
-
-For custom Excel cash analysis, only a `Transactions` sheet is required. An invoice-only workbook with an `Invoices` sheet can instead produce a customer invoice report without a cash ledger. For transactions, use these headers:
-
-`Date`, `Type`, `Category`, `Description`, `Amount_USD`
-
-Dates should be `YYYY-MM-DD`. `Type` should be `Income` or `Expense` and `Amount_USD` should be positive. Optional `Signed_Amount_USD`, `Transaction_ID`, `Counterparty` enhance the audit trail.
-
-For more complete analysis, include the extra sheets with the same headers used in the sample workbook. The v1 importer does not evaluate uncalculated formulas or support `.xls` files.
-
-### CSV
-
-A CSV is treated as a single `Transactions` sheet. Example:
+You can upload a simple CSV with columns:
 
 ```csv
 Date,Type,Category,Description,Amount_USD
@@ -174,124 +103,83 @@ Date,Type,Category,Description,Amount_USD
 2026-01-12,Expense,Utilities,Electricity bill,175
 ```
 
-Financial metrics available from a CSV will be limited to the fields provided; invoice and subscription details require the corresponding sheets.
+`Date` is `YYYY-MM-DD`, `Type` is `Income` or `Expense`, and `Amount_USD` is a positive amount. A workbook needs a `Transactions` sheet for ledger cash analysis. An invoice-only file can be reviewed for unpaid invoices but does not establish cash receipts or a cash forecast. Optional fields provide additional traceability.
 
-### PDF: start with the records you have
+FINOVA separates actual money received from invoiced revenue, prevents double counting when expense/payroll sheets are included, and only estimates closing cash when opening balance and complete ledger coverage support that figure. Overdue invoices are evaluated at the supplied reporting date, not today's date.
 
-Clients do not need the complete demo workbook. FINOVA can start with a PDF bank statement, a transaction report, or a customer invoice in USD.
+**Forecast method:** 70% recent three-month average plus 30% same month last year, where available. The ranges are illustrative—not statistical confidence intervals or trained machine-learning predictions. **Anomaly method:** deterministic category baseline comparisons, subscription price shifts, and late invoices. Investigation reports explain evidence and possible next steps, not assumed causes.
 
-1. Upload a PDF with the same **Upload financial data** button.
-2. FINOVA extracts text locally and uses OCR for scanned pages when the optional tools are installed.
-3. Check the proposed document type and every extracted row. Correct dates, amounts, categories, and income/expense direction; uncheck rows to exclude them, and add any missing records.
-4. For a statement, select its coverage: selected records/one account, expenses only, receipts only, or all cash transactions for the period. Opening cash is optional and available only for a complete cash ledger.
-5. For customer invoices, confirm IDs, customers, due dates, invoice amounts, outstanding balances, and payment status. Select the date to use for overdue checks. A paid invoice does not by itself establish a cash receipt.
-6. Confirm the review to replace the current dataset and run analysis. Uploading, editing, or cancelling a PDF draft leaves the existing dashboard intact.
+## Test the current source
 
-**Supported initial layouts:** English documents with one dated transaction per line, ISO dates or U.S. dates including the year, amounts with two decimal places, and explicit income/expense, signed amounts, or debit/credit columns. Common running-balance columns are excluded from proposed payment amounts. Customer invoice extraction recognizes labels such as Invoice Number, Bill To, Invoice Date, Due Date, Total, and Amount Due.
-
-This importer does not understand every bank or invoice layout. Wrapped rows, missing years, unusual tables, and OCR errors can need manual corrections. Unsigned amounts with no clear direction require the user to choose Income or Expense. Unsupported layouts can be entered manually using the extracted source text. **Retry with OCR** is available for PDFs whose text layer is incomplete.
-
-Limits: **12 MB**, **20 pages**, up to **5 scanned/OCR pages**, and **1,000 reviewed records** per PDF. Reviews expire after 15 minutes. Password-protected or damaged PDFs are rejected. Records must be USD; currency conversion is not included. Vendor bills and payroll registers are not independently modeled; include only actual payments in transaction analysis.
-
-PDF confirmation JSON is capped at **2 MiB** so reviewed record batches fit; other JSON endpoints retain an **8 KiB** limit. The deployment proxy template uses the same limits. PDF upload, confirmation, cancellation, and OCR retry use the same authentication, session isolation, and request checks as other routes.
-
-Extraction has a 60-second processing budget, and the browser stops waiting for PDF uploads after 75 seconds. Upload errors stay visible until the next upload. If the screen asks you to restart FINOVA, stop the old process with **Ctrl+C**, run `python3 run.py` again from this folder, and reload the browser; the running Python server must be restarted to load the PDF routes.
-
-Try the fictional files in [data/pdf_examples](data/pdf_examples): `bank-statement.pdf`, `customer-invoice.pdf`, and `scanned-bank-statement.pdf`.
-
-Partial statements describe the uploaded records. Closing cash requires opening cash plus a complete cash ledger. Reviewed PDF cash forecasts additionally require at least three months of history and complete coverage. Customer invoice reports display known outstanding balances and unknown payment balances separately, with cash metrics and forecasts unavailable.
-
-### Optional PDF tools
-
-CSV, Excel, and the demo still run with Python's standard library alone. PDF support additionally needs the [Poppler command-line tools](https://poppler.freedesktop.org/) on the server's PATH: `pdfinfo` and `pdftotext`. Scanned PDFs need `pdftoppm`, [Tesseract](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html), and its English language data.
-
-On Ubuntu/Debian:
-
-```bash
-sudo apt install poppler-utils tesseract-ocr tesseract-ocr-eng
-```
-
-On macOS or Windows, install Poppler and Tesseract for your platform and add their executables to PATH. Check installation with:
-
-```bash
-pdfinfo -v
-pdftotext -v
-tesseract --version
-```
-
-The upload screen reports whether PDF extraction is available. Processing is local; PDF files are written into a temporary directory that is cleaned up after extraction. No PDF or OCR data is sent to an AI service for extraction.
-
-## 4 — How the calculations work
-
-- **Cash receipts** = all positive transaction cash inflows.
-- **Cash payments** = all recorded expense cash outflows.
-- **Cash movement** = cash receipts − cash payments.
-- **Estimated closing cash** = supplied opening cash + cumulative cash movement for a complete ledger. Without an opening balance or with declared partial coverage, closing cash is shown as not provided.
-- **Invoiced revenue** comes from `Revenue` instead of treating deposits as sales.
-- **Upcoming forecasts** use 70% recent 3-month average plus 30% prior-year corresponding month where available. They are *heuristics*, **not trained ML models** and their illustrative intervals are not statistical confidence intervals.
-- **Price increase detection** compares the latest recorded subscription charge to its first recorded price.
-- **Spend anomaly checks** compare recent category spending against the previous six observations' median.
-- **Invoice overdue checks** use the last reporting month in the input data, not the computer's current date.
-
-**DO NOT double count:** `Operating Expenses` and `Payroll` already feed `Transactions`; `Revenue` is invoice-based, while `Transactions` income means money collected. Adding those together is incorrect.
-
-## 5 — Verification
-
-On Windows:
+**Windows CMD:**
 
 ```bat
 py -3 -m unittest discover -s tests -v
 ```
 
-On macOS/Linux:
+**macOS/Linux:**
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover financial reconciliations, anomalies, cash balances, forecasting, CSV/XLSX parsing, PDF extraction and OCR, invoice-only analysis, the review/confirmation lifecycle, proxy authentication, session isolation, request limits, and secret handling. They never require live AI credentials. Actual PDF/OCR integration tests are skipped if their optional system tools are not installed.
+Optional Node.js browser behavior checks:
 
-## 6 — Architecture
-
-```
-Web browser (HTML / CSS / vanilla JavaScript)
-   │  Local JSON + multipart upload
-   ▼
-Python ThreadingHTTPServer (server.py)
-   ├─ XLSX and CSV reader (xlsx_reader.py, stdlib zipfile + XML)
-   ├─ PDF drafts (pdf_reader.py, local Poppler + optional Tesseract)
-   │    └─ Browser review → confirmation → validated financial records
-   ├─ Financial calculations (finance.py, stdlib statistics)
-   ├─ Offline Q&A based on computed metrics
-   └─ Akamai workshop API via HTTPS (optional)
-         ├─ hackathon-chat: financial summaries and questions
-         └─ hackathon-image: optional abstract Wrapped artwork
+```bash
+node tests/test_auth_ui.js
+node tests/test_story_reset.js
 ```
 
-The app contains **no hidden dependency on Flask, pandas, Node.js, cloud databases, or local GPU**. Your team can replace the local server with a production backend later, while keeping the analytics functions and frontend.
+**Audited updated ZIP (October 11, 2026):** **95 Python tests passed** and both login/story JavaScript tests passed. The earlier running Akamai server passed **28 tests** on its older deployed commit. The 95 tests do not prove live SMTP, PDF system dependencies, cloud AI connectivity, or all hosted browser flows.
 
-## 7 — Next engineering steps (team priority)
+## Code and documents
 
-1. **Data**: confirm the uploaded workbook reconciles to FINOVA's monthly summaries; record test cases.
-2. **Financial modeling**: upgrade the forecast using time-based train/test validation, documented error metrics, and sufficient historical observations. Never present an untrained heuristic as an ML model.
-3. **Akamai AI**: configure the real team key, demonstrate an AI explanation and optionally generate a Wrapped image.
-4. **Frontend / Pitch**: show a full user journey: upload → anomaly → financial outlook → scenario → Wrapped. Keep the pitch within event constraints.
-5. **Deployment**: use the workshop deployment guides to host FINOVA securely on Akamai Cloud. **Do not deploy this local development HTTP server to the public Internet as-is.**
+| Path | Purpose |
+| --- | --- |
+| `run.py`, `server.py`, `security.py` | App entry point, HTTP routes and proxy guards. |
+| `auth.py` | SMTP login codes, SQLite sessions and email identities. |
+| `finance.py`, `investigations.py` | Financial metrics, flags and evidence. |
+| `xlsx_reader.py`, `pdf_reader.py` | Read/validate financial source files. |
+| `reports.py`, `report_pdf.py` | Build downloadable evidence reports and PDFs. |
+| `static/` | Login and dashboard UI, PDF review, story/video, and report controls. |
+| `data/` | Fictional workbook, example PDFs; ignored local auth DB created at runtime. |
+| `tests/` | Unit, HTTP/security and UI regression checks. |
+| `deploy/` | Non-root systemd, nginx proxy and certificate renewal templates. |
+| `tools/check_secrets.py` | Heuristic Git/history secret scanner. |
 
-## 8 — Security & limitations
+**Complete guides:**
 
-**This version is a local hackathon demo, not a banking product or production-ready multitenant service.**
+- [README_CONFIGURATION.md](README_CONFIGURATION.md) — **exact Akamai setup:** SSH keys, CLI, Linode/firewall, Python service, DuckDNS, Certbot, nginx, security layers, troubleshooting, future GitHub updates, and the critical **new SQLite/SMTP upgrade**.
+- [README_TECHNOLOGY.md](README_TECHNOLOGY.md) — technologies, modules, data flow, decisions and limitations.
+- [architecture.txt](architecture.txt) — ASCII network, authentication and analytics diagram.
+- [deploy/README.md](deploy/README.md) — original restricted-demo server templates; adapt to Debian and DuckDNS using the configuration guide above.
 
-- Contains fictional financial records only. Do **not** upload real personal or business financial records to an exposed demo server.
-- Files are capped at 12 MiB, with an additional 64 KiB multipart allowance. JSON requests are capped at 8 KiB. ZIP decompression, entries, sheets, rows, columns, and cells are bounded; XML entities are rejected.
-- Demo records are kept in bounded, expiring browser sessions. Local mode is loopback-only; proxy mode requires an authenticated HTTPS gateway and binds sessions to its verified username. No persistent database is included.
-- Financial summaries may be sent to the Akamai hosted AI endpoint when a real key is configured, but raw transactions are not sent to chat in this version.
-- Forecasts and subscription signals are informational, not investment or accounting advice. No money movement or subscription cancellation occurs.
-- Never commit `.env` or include secrets in a hackathon submission.
-- Before remote publication, apply and verify the restricted service account, HTTPS/authenticated nginx proxy, host and cloud firewall, and server-only secret configuration in [deploy/README.md](deploy/README.md). The templates support a restricted demo; production still requires an appropriate application server and a reviewed account/data model.
-- Run `python3 tools/check_secrets.py` before pushing. Keep `.env`, private keys, passwords, and populated deployment files out of Git and public JavaScript.
+## How the Akamai-hosted site updates
 
-Built during Hack Midwest 2026 — **FINOVA = Finance Innovation**.
+[FINOVA website](https://finova-intelligence.duckdns.org/) uses **Akamai Linode (Debian 12)**, **DuckDNS**, **Let's Encrypt HTTPS**, **nginx Basic Auth**, a private Python service on `127.0.0.1:8000`, and a restricted Cloud Firewall. The GitHub checkout is `/root/finova-source`; the **actual running copy** is `/opt/finova`.
 
----
-**FINOVA v2 update (Hack Midwest 2026):** For the newest Animated Business Wrapped, local video export, Akamai key test and artwork flow, read [README_V2_FIRST.md](README_V2_FIRST.md). This older README describes the v1 financial engine, which remains available.
+A GitHub `push` does **not** automatically update the website. The workflow is **push reviewed code -> pull on Akamai -> test -> back up -> copy tested release -> restart FINOVA -> verify in browser**. The hostname, HTTPS certificate, SSH keys and nginx settings normally stay in place across code updates.
+
+**Before deploying the current ZIP**, follow **Part H of [README_CONFIGURATION.md](README_CONFIGURATION.md)**. The new email login needs both private SMTP configuration and a writable SQLite state directory; the original service is read-only. Don't unintentionally lose login state or expose private uploads.
+
+## Security, caveats, and next steps
+
+- **Restricted fictional-data demo**, not a production financial service, regulated accounting/audit platform, banking connection, or real transaction processor.
+- Nginx Basic Auth and the new email-code login are **different checks**. The email-auth database persists when configured; uploaded financial results remain session memory and reset on logout/restart.
+- Python's built-in `http.server` is lightweight and should not be treated as an independently hardened commercial production server.
+- Reports and Q&A should cite actual records; FINOVA does not assert causes it cannot verify, guarantee forecast accuracy, or classify suspected fraud.
+- The existing deployment guide flags a credential-shaped value in early Git history. Rotate any real exposed key with the provider. Run `python3 tools/check_secrets.py` **in a real Git checkout**; the downloaded ZIP alone does not include historical Git objects.
+- Future work: train/test forecasting if evidence supports it, improve input validation and multi-user isolation, move SQLite state outside `/opt/finova`, improve production hosting and monitoring, and quantify business benefit.
+
+**FINOVA — Finance Innovation. From financial records to clearer decisions.**
+
+
+## Team
+
+Built by:
+
+- Chukwunonyelum Rosalyn Ezeako
+- Afsana Airin
+- Odunayo Juliana Owokade
+- Ruyi Gai
+- Md Shakiful Islam Khan

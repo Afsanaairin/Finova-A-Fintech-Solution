@@ -34,6 +34,10 @@ def multipart(blob=CSV, filename='example.csv', extra=False):
 
 class HTTPBoundaryTests(unittest.TestCase):
     def setUp(self):
+        self.login = patch.object(server.AUTH, 'get_user', side_effect=lambda token:
+                                 {'email': 'reader@example.com'} if token == 'security-test-login' else None)
+        self.login.start()
+        self.addCleanup(self.login.stop)
         server.SESSIONS.clear()
         server.PENDING_IMPORTS.clear()
         self.backend = FinovaHTTPServer(('127.0.0.1', 0), server.Handler,
@@ -56,6 +60,8 @@ class HTTPBoundaryTests(unittest.TestCase):
         if method == 'POST':
             supplied.update({'Content-Type': 'application/json', 'X-Finova-Request': '1'})
         supplied.update(headers or {})
+        if trusted and 'finova_auth=' not in supplied.get('Cookie', ''):
+            supplied['Cookie'] = 'finova_auth=security-test-login; ' + supplied.get('Cookie', '')
         conn = http.client.HTTPConnection('127.0.0.1', self.backend.server_port, timeout=5)
         try:
             conn.request(method, path, body=body, headers=supplied)
@@ -174,7 +180,7 @@ class HTTPBoundaryTests(unittest.TestCase):
         status, _, blob = self.request('POST', '/api/pdf/confirm', body, {'Cookie': cookie})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(blob)['summary']['totals']['cash_in'], 100)
-        self.assertEqual(server.SESSIONS[sid]['user'], 'alice')
+        self.assertEqual(server.SESSIONS[sid]['user'], ('alice', 'reader@example.com'))
         self.assertNotIn(sid, server.PENDING_IMPORTS)
         _, _, dashboard = self.request(headers={'Cookie': cookie})
         self.assertEqual(json.loads(dashboard)['transaction_count'], 100)
@@ -233,6 +239,7 @@ class HTTPBoundaryTests(unittest.TestCase):
                 prefix = ('POST /api/reset HTTP/1.0\r\nHost: finova.example.com\r\n'
                           'X-Finova-User: alice\r\nX-Forwarded-Proto: https\r\n'
                           f'X-Finova-Proxy-Token: {PROXY_TOKEN}\r\nX-Finova-Request: 1\r\n'
+                          'Cookie: finova_auth=security-test-login\r\n'
                           + framing + '\r\n').encode()
                 with socket.create_connection(self.backend.server_address, timeout=5) as conn:
                     conn.sendall(prefix + body)
@@ -285,7 +292,7 @@ class ConfigurationAndImporterTests(unittest.TestCase):
             navigation = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
                           'Sec-Fetch-Dest': 'document'}
             for host, path, headers, status in [
-                (f'127.0.0.1:{backend.server_port}', '/api/health', {}, 200),
+                (f'127.0.0.1:{backend.server_port}', '/api/health', {}, 401),
                 ('evil.example', '/api/health', {}, 403),
                 (f'localhost:{backend.server_port}', '/', navigation, 200),
                 (f'127.0.0.1:{backend.server_port}', '/', navigation, 200),

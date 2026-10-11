@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from statistics import median, mean
 import math
+from investigations import investigation
 
 
 def num(value, default=0.0):
@@ -39,6 +40,33 @@ def add_month(month, distance):
 
 def _short(s, length=100):
     return str(s or '')[:length]
+
+
+def transaction_records(source):
+    """Canonical ledger rules for analytics and period reports; retain raw precision."""
+    records, seen = [], set()
+    for idx, t in enumerate(source):
+        d = parse_date(t.get('Date') or t.get('date') or t.get('Transaction_Date'))
+        if not d:
+            continue
+        ty = _short(t.get('Type') or t.get('type')).lower()
+        signed = t.get('Signed_Amount_USD', '')
+        raw = t.get('Amount_USD', t.get('Amount', ''))
+        if not ty:
+            ty = 'income' if num(signed if signed != '' else raw) >= 0 else 'expense'
+        income = ty in ('income', 'revenue', 'credit', 'deposit')
+        amount = abs(num(raw if raw != '' else signed))
+        key = _short(t.get('Transaction_ID') or ('ROW' + str(idx)))
+        if not amount or key in seen:
+            continue
+        seen.add(key)
+        category = _short(t.get('Category') or 'Uncategorized', 80)
+        description = _short(t.get('Description') or t.get('Counterparty') or category)
+        records.append({'id': key, 'date': d.isoformat(), 'month': d.strftime('%Y-%m'),
+                        'type': 'Income' if income else 'Expense', 'category': category,
+                        'description': description, 'vendor': _short(t.get('Counterparty') or t.get('Vendor') or description),
+                        'amount': amount, 'signed': amount if income else -amount})
+    return sorted(records, key=lambda t: (t['date'], t['id']))
 
 
 def analyze_invoices(data):
@@ -79,6 +107,8 @@ def analyze_invoices(data):
                           'invoices': overdue[:15], 'evidence': [], 'evidence_count': len(overdue), 'history': [],
                           'method': f'Known outstanding balance above zero and due date before {as_of.isoformat()}.',
                           'action': 'Confirm the remaining balance and expected payment date with the customer.'})
+    for finding in anomalies:
+        finding['investigation'] = investigation(finding, as_of.isoformat())
     totals = dict.fromkeys(('cash_in', 'cash_out', 'net', 'closing_cash', 'last_month_cash_in',
                            'last_month_cash_out', 'last_month_net', 'last_month_invoiced_revenue',
                            'cash_in_change_pct', 'expense_change_pct', 'subscription_monthly', 'subscription_annual'))
@@ -110,28 +140,9 @@ def analyze(data):
     categories = defaultdict(float)
     by_month_category = defaultdict(lambda: defaultdict(float))
     normalized = []
-    seen = set()
-    for idx, t in enumerate(source):
-        d = parse_date(t.get('Date') or t.get('date') or t.get('Transaction_Date'))
-        if not d:
-            continue
-        ty = _short(t.get('Type') or t.get('type')).lower()
-        signed = t.get('Signed_Amount_USD', '')
-        raw_amt = t.get('Amount_USD', t.get('Amount', ''))
-        if not ty:
-            ty = 'income' if num(signed if signed != '' else raw_amt) >= 0 else 'expense'
-        is_income = ty in ('income', 'revenue', 'credit', 'deposit')
-        amount = abs(num(raw_amt if raw_amt != '' else signed))
-        if amount == 0:
-            continue
-        category = _short(t.get('Category') or 'Uncategorized', 80)
-        desc = _short(t.get('Description') or t.get('Counterparty') or category)
-        vendor = _short(t.get('Counterparty') or t.get('Vendor') or desc)
-        key = _short(t.get('Transaction_ID') or ('ROW' + str(idx)))
-        if key in seen:
-            continue
-        seen.add(key)
-        mon = d.strftime('%Y-%m')
+    for record in transaction_records(source):
+        mon, category, amount = record['month'], record['category'], record['amount']
+        is_income = record['type'] == 'Income'
         if is_income:
             months[mon]['cash_in'] += amount
         else:
@@ -139,10 +150,7 @@ def analyze(data):
             months[mon]['categories'][category] += amount
             categories[category] += amount
             by_month_category[category][mon] += amount
-        normalized.append({'id': key, 'date': d.isoformat(), 'month': mon,
-                           'type': 'Income' if is_income else 'Expense',
-                           'category': category, 'description': desc, 'vendor': vendor,
-                           'amount': money(amount), 'signed': money(amount if is_income else -amount)})
+        normalized.append({**record, 'amount': money(amount), 'signed': money(record['signed'])})
     if not normalized:
         raise ValueError('No valid transaction dates and amounts were found.')
     normalized.sort(key=lambda t: (t['date'], t['id']))
@@ -281,6 +289,7 @@ def analyze(data):
     anomalies.sort(key=lambda a:(a['type']=='Overdue invoices', a['type']=='Subscription increase', a.get('amount', 0)),reverse=True)
     for idx, anomaly in enumerate(anomalies):
         anomaly['id'] = f'alert-{idx+1}'
+        anomaly['investigation'] = investigation(anomaly, as_of.isoformat())
 
     last6 = monthly[-6:]
     billed_recent = [m['invoiced_revenue'] for m in monthly[-3:] if m['invoiced_revenue'] is not None]

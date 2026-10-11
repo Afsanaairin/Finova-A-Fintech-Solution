@@ -73,7 +73,7 @@ function draw(t){
  switch(scene){
   case 0: {
     overline(line(data.company,27));headline('YOUR BUSINESS. YOUR STORY.',top+115*scale,P?70:75);
-    detail('A financial year that finally makes sense.',P?top+425*scale:top+225*scale);
+    detail('Your uploaded financial records, explained.',P?top+425*scale:top+225*scale);
     const pulse=.87+.13*Math.sin(t*3);ctx.strokeStyle=accent;ctx.lineWidth=9*scale;
     ctx.beginPath();ctx.arc(P?W*.50:W*.82,P?H*.75:H*.56,110*scale*pulse,0,Math.PI*2);ctx.stroke();
     text('✦',P?W*.50:W*.82,P?H*.77:H*.60,`900 ${92*scale}px Arial`,'#d4fff3','center');
@@ -106,8 +106,8 @@ function draw(t){
   }
   case 5: {
     overline('05  •  The subscription story');headline('THE QUIET RECURRING COST.');
-    big(money(w.subscription_annual),top+(P?360:265)*scale);
-    detail('Annualized subscription run rate. '+data.subscriptions.length+' services currently tracked; review actual usage before cancelling.',top+(P?468:350)*scale);
+    big(data.has_subscription_data?money(w.subscription_annual):'NOT PROVIDED',top+(P?360:265)*scale);
+    detail(data.has_subscription_data?'Annualized subscription run rate. '+data.subscriptions.length+' services currently tracked; review actual usage before cancelling.':'Include a subscription registry to review recurring costs.',top+(P?468:350)*scale);
     break;
   }
   case 6: {
@@ -213,5 +213,5 @@ function init(){
  $('story-format').addEventListener('change',()=>{if(playing)return;size=$('story-format').value;dimensions();draw(.9)});
  document.addEventListener('visibilitychange',()=>{if(document.hidden&&recording)setStatus('Keep this browser tab visible during export for smooth video recording.',true)});
 }
-window.FINOVAStory={init,setData(d){data=d;draw(.9);setStatus('Ready · 8 scenes · 30 seconds. Choose Play or Export video.')},setArt(image){const img=new Image();img.onload=()=>{art=img;draw(.9)};img.onerror=()=>setStatus('Generated artwork could not be loaded.',true);img.src=image},setStatus,resetArt(){art=null;draw(.9)}};
+window.FINOVAStory={init,setData(d){data=d;draw(.9);setStatus(d?'Ready · 8 scenes · 30 seconds. Choose Play or Export video.':'Upload transaction records to create a Business Wrapped story.')},setArt(image){const img=new Image();img.onload=()=>{art=img;draw(.9)};img.onerror=()=>setStatus('Generated artwork could not be loaded.',true);img.src=image},setStatus,resetArt(){art=null;draw(.9)}};
 })();

@@ -92,7 +92,7 @@ function renderAnomalies(){
   if(!DATA)return;
   const all=DATA.anomalies||[];
   text('anomaly-count',all.length);
-  text('spike-count',all.filter(a=>a.type==='Spending spike').length);
+  text('spike-count',DATA.analysis_kind==='invoices'?'Not provided':all.filter(a=>a.type==='Spending spike').length);
  text('price-count',DATA.has_subscription_data?all.filter(a=>a.type==='Subscription increase').length:'Not provided');
  text('overdue-count',DATA.has_invoice_data?DATA.totals.overdue_invoices:'Not provided');
   renderFinancialCards();
@@ -129,6 +129,7 @@ function toggleCardBreakdown(card,expanded){
   const show=expanded??button.getAttribute('aria-expanded')!=='true';
   hideCardInfo();
   button.setAttribute('aria-expanded',String(show));
+  button.setAttribute('aria-label',`${show?'Hide':'Show'} breakdown for ${card.querySelector('.financial-card-heading>span').textContent}`);
   button.querySelector('span').textContent=show?'Hide breakdown':'Show breakdown';
   button.querySelector('b').textContent=show?'⌃':'⌄';
   card.querySelector('.financial-card-breakdown').classList.toggle('hidden',!show);
@@ -136,22 +137,29 @@ function toggleCardBreakdown(card,expanded){
 function renderFinancialCards(){
   hideCardInfo();
   const d=DATA,t=d.totals,latest=d.monthly.at(-1),previous=d.monthly.at(-2),all=d.anomalies||[];
+  const hasTransactions=d.analysis_kind!=='invoices';
   const spikes=all.filter(a=>a.type==='Spending spike'),prices=all.filter(a=>a.type==='Subscription increase');
-  const invoiceFlag=all.find(a=>a.type==='Overdue invoices');
-  const invoiceRows=d.analysis_kind==='invoices'?(d.invoices||[]).filter(i=>i.overdue_days>0).map(i=>({...i,amount:i.outstanding})):(d.overdue_invoices||[]);
+  const invoiceFlags=all.filter(a=>a.type==='Overdue invoices'),invoiceFlag=invoiceFlags[0];
+  const subscriptionIncrease=prices.reduce((sum,a)=>sum+(a.amount-a.baseline),0);
+  const overdueBalance=invoiceFlag?.amount??0;
+  const count=(value,label)=>`${value} ${label}${value===1?'':'s'}`;
+  const patternTypes=[];
+  if(hasTransactions)patternTypes.push(count(spikes.length,'spending spike'));
+  if(d.has_subscription_data)patternTypes.push(count(prices.length,'subscription increase'));
+  if(d.has_invoice_data)patternTypes.push(count(invoiceFlags.length,'overdue-invoice flag'));
+  const period=latest?`${friendlyMonth(d.monthly[0].month)} – ${friendlyMonth(latest.month)}`:`Invoice records · as of ${d.as_of}`;
   const amount=value=>value===null||value===undefined?'Not provided':Number(value).toLocaleString('en-US',{style:'currency',currency:'USD'});
   const row=(label,value,total=false)=>`<div class="financial-breakdown-row${total?' financial-breakdown-total':''}"><span>${escapeHTML(label)}</span><b${total&&String(value).startsWith('-')?' class="financial-value-negative"':''}>${escapeHTML(value)}</b></div>`;
   const note=message=>`<p class="financial-breakdown-note">${escapeHTML(message)}</p>`;
-  const findingRows=findings=>findings.length?`<ul class="financial-record-list">${findings.map(a=>`<li><button type="button" data-card-anomaly="${escapeHTML(a.id)}"><b>${escapeHTML(a.service||a.category)} <i aria-hidden="true">→</i></b><small>${escapeHTML(a.type)} · ${escapeHTML(a.month)}</small><p>${amount(a.amount)}${a.baseline!==null&&a.baseline!==undefined?` vs ${amount(a.baseline)} baseline`:''}</p></button></li>`).join('')}</ul>`:note('No matching patterns flagged in the uploaded records.');
   const explanations={
     'cash-received':'Money actually received during the latest reporting month. Customer invoices show billed amounts separately.',
     'cash-paid':'Money paid during the latest reporting month, including recorded payroll, supplier and operating payments.',
     'net-cash':'Cash received minus cash paid. This measures cash flow, not accounting profit.',
     'closing-cash':'Opening cash plus receipts minus payments across the reporting period. Complete transaction coverage is required.',
-    patterns:'Financial patterns flagged in your records: spending spikes, subscription price increases and overdue invoices.',
-    spikes:'Monthly category spending compared with its recent median. Large increases are flagged for review.',
-    subscriptions:d.has_subscription_data?'Recorded subscription price increases compared with each service’s first recorded charge.':'Subscription records were not provided in this upload.',
-    overdue:d.has_invoice_data?'Customer invoices with known outstanding balances and due dates before the reporting date.':'Customer invoice records were not provided in this upload.'
+    patterns:all.length?`${count(all.length,'pattern')} flagged: ${patternTypes.join(', ')}. One invoice flag can cover several invoices.`:'No patterns flagged in the provided records. Checks are limited to the data uploaded.',
+    spikes:hasTransactions?`${count(spikes.length,'category-month spending spike')} exceeded the recent median by more than 40% and at least $100.`:'Transaction records were not provided. Upload categorized expenses to check spending spikes.',
+    subscriptions:d.has_subscription_data?`${count(prices.length,'subscription price increase')} added ${amount(subscriptionIncrease)}/month compared with the first recorded charges.`:'Subscription records were not provided in this upload.',
+    overdue:d.has_invoice_data?`${count(t.overdue_invoices,'customer invoice')} overdue as of ${d.as_of}, with ${amount(overdueBalance)} in known outstanding balances.`:'Customer invoice records were not provided in this upload.'
   };
   const cashComparison=(key,change)=>row('Reporting month',latest?friendlyMonth(latest.month):'Not provided')+row('This month',amount(latest?.[key]))+row('Previous month',amount(previous?.[key]))+row('Change',change===null||change===undefined?'Not available':`${change>0?'+':''}${change}%`);
   const breakdowns={
@@ -159,20 +167,19 @@ function renderFinancialCards(){
     'cash-paid':cashComparison('cash_out',t.expense_change_pct)+note('Calculated from posted Expense transactions. Payroll and supplier payments already in the ledger are counted once.'),
     'net-cash':row('Cash received',amount(t.last_month_cash_in))+row('Cash paid',amount(t.last_month_cash_out))+row('Net cash movement',amount(t.last_month_net),true)+note('Cash received − cash paid. This is a cash-flow measure, not the company’s accounting profit.'),
     'closing-cash':row('Opening cash',d.has_opening_cash?amount(t.closing_cash-t.net):'Not provided')+row('Cash received · whole period',amount(t.cash_in))+row('Cash paid · whole period',amount(t.cash_out))+row('Closing cash',amount(t.closing_cash),true)+note(d.has_opening_cash?'Opening cash + recorded receipts − recorded payments, across the uploaded reporting period.':'Provide an opening balance and a complete cash ledger to calculate closing cash.'),
-    patterns:row('Spending spikes',spikes.length)+row('Subscription changes',prices.length)+row('Flags for overdue invoices',all.filter(a=>a.type==='Overdue invoices').length)+row('Total patterns',all.length,true)+note('A single overdue-invoice pattern can cover several customer invoices.')+findingRows(all),
-    spikes:note('Flagged when monthly category spending is more than 40% and at least $100 above its recent median.')+findingRows(spikes),
-    subscriptions:d.has_subscription_data?findingRows(prices)+note('Current charges are compared with the first recorded charges. Usage is not established by payment records.'):note('Provide a Subscriptions worksheet and matching Operating Expenses history to investigate price changes.'),
-    overdue:d.has_invoice_data?row('Reporting date',d.as_of)+row('Overdue invoices',t.overdue_invoices,true)+(invoiceRows.length?`<ul class="financial-record-list">${invoiceRows.map(i=>`<li><button type="button" data-card-anomaly="${escapeHTML(invoiceFlag?.id||'')}"><b>${escapeHTML(i.customer)} <i aria-hidden="true">→</i></b><small>${escapeHTML(i.invoice)} · due ${escapeHTML(i.due)}</small><p>${amount(i.amount)} outstanding · ${i.overdue_days} days overdue</p></button></li>`).join('')}</ul>`:note('No overdue invoices with known outstanding balances.'))+(t.unknown_invoice_balances?note(`${t.unknown_invoice_balances} invoice(s) have unknown payment balances and are excluded.`):'')+(invoiceRows.length<t.overdue_invoices?note(`Showing ${invoiceRows.length} of ${t.overdue_invoices} overdue invoices included in this report.`):''):note('Provide customer invoice due dates and outstanding balances to check overdue payments.')
+    patterns:row('Spending spikes',hasTransactions?spikes.length:'Not provided')+row('Subscription changes',d.has_subscription_data?prices.length:'Not provided')+row('Flags for overdue invoices',d.has_invoice_data?invoiceFlags.length:'Not provided'),
+    spikes:row('Spending spikes',hasTransactions?spikes.length:'Not provided'),
+    subscriptions:row('Subscription changes',d.has_subscription_data?prices.length:'Not provided')+(d.has_subscription_data?row('Added monthly cost',amount(subscriptionIncrease),true):''),
+    overdue:row('Overdue invoices',d.has_invoice_data?t.overdue_invoices:'Not provided')+(d.has_invoice_data?row('Reporting date',d.as_of)+row('Known overdue balance',amount(overdueBalance),true):'')
   };
+  text('patterns-context',period);
+  text('spikes-context',hasTransactions?'Category spending across the uploaded period':'Transaction records not provided');
+  text('subscriptions-context',d.has_subscription_data?`${amount(subscriptionIncrease)} more per month`:'Subscription records not provided');
+  text('overdue-context',d.has_invoice_data?`${amount(overdueBalance)} known overdue · as of ${d.as_of}`:'Customer invoice records not provided');
   document.querySelectorAll('.financial-card').forEach(card=>{
     const kind=card.dataset.card;
     card.querySelector('.financial-card-tooltip').textContent=explanations[kind];
     card.querySelector('.financial-card-breakdown').innerHTML=breakdowns[kind];
-    card.querySelectorAll('[data-card-anomaly]').forEach(button=>button.addEventListener('click',()=>{
-      toggleCardBreakdown(card,false);openAnomaly(button.dataset.cardAnomaly);
-      $('anomaly-detail').scrollIntoView({behavior:'smooth',block:'nearest'});
-      $('explain-anomaly')?.focus({preventScroll:true});
-    }));
   });
   const net=t.last_month_net;
   text('net-cash-period',latest?`${friendlyMonth(latest.month)} · ${net>0?'Positive':net<0?'Negative':'No'} net cash movement`:'Cash transactions not provided');
@@ -183,7 +190,7 @@ function initFinancialCards(){
   document.querySelectorAll('.financial-card').forEach(card=>{
     const kind=card.dataset.card,label=card.querySelector('span'),title=label.textContent;
     label.outerHTML=`<div class="financial-card-heading"><span id="card-${kind}-label">${escapeHTML(title)}</span><button type="button" class="financial-card-info" aria-label="About ${escapeHTML(title)}" aria-expanded="false" aria-controls="card-${kind}-tip" aria-describedby="card-${kind}-tip">ⓘ</button></div>`;
-    card.insertAdjacentHTML('beforeend',`<p id="card-${kind}-tip" class="financial-card-tooltip hidden" role="tooltip"></p><button type="button" class="financial-card-toggle" aria-expanded="false" aria-controls="card-${kind}-breakdown"><span>Show breakdown</span><b aria-hidden="true">⌄</b></button><div id="card-${kind}-breakdown" class="financial-card-breakdown hidden" role="region" aria-labelledby="card-${kind}-label"></div>`);
+    card.insertAdjacentHTML('beforeend',`<p id="card-${kind}-tip" class="financial-card-tooltip hidden" role="tooltip"></p><button type="button" class="financial-card-toggle" aria-label="Show breakdown for ${escapeHTML(title)}" aria-expanded="false" aria-controls="card-${kind}-breakdown"><span>Show breakdown</span><b aria-hidden="true">⌄</b></button><div id="card-${kind}-breakdown" class="financial-card-breakdown hidden" role="region" aria-labelledby="card-${kind}-label"></div>`);
     const info=card.querySelector('.financial-card-info');
     card.addEventListener('pointerenter',event=>{if(event.pointerType!=='touch')showCardInfo(card)});
     card.addEventListener('pointerleave',()=>{

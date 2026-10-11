@@ -1,2 +1,3 @@
 # FINOVA V1 uses ONLY Python standard-library modules.
 # No pip install is required for the local demo.
+# Optional PDF import needs Poppler and Tesseract system tools; see README.md.

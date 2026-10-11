@@ -41,9 +41,70 @@ def _short(s, length=100):
     return str(s or '')[:length]
 
 
+def analyze_invoices(data):
+    """Customer invoice analysis without manufacturing a cash ledger."""
+    source = data.get('Invoices') or []
+    if not source:
+        raise ValueError('At least one customer invoice is required.')
+    as_of = parse_date(data.get('Invoice Reporting Date')) or date.today()
+    profile = {str(row.get('Field')): row.get('Value') for row in data.get('Business Profile', [])}
+    invoices = []
+    unknown = 0
+    for record in source:
+        amount = num(record.get('Amount_USD'))
+        outstanding = num(record.get('Outstanding_USD'), None)
+        status = _short(record.get('Status') or 'Unknown')
+        if outstanding is None and status.lower() == 'unpaid':
+            outstanding = amount
+        elif status.lower() == 'paid':
+            outstanding = 0.0
+        if outstanding is None:
+            unknown += 1
+        due = parse_date(record.get('Due_Date'))
+        invoices.append({'invoice': _short(record.get('Invoice_ID')), 'customer': _short(record.get('Customer')),
+                         'invoice_date': _short(record.get('Invoice_Date')), 'amount': money(amount),
+                         'outstanding': money(outstanding) if outstanding is not None else None,
+                         'status': status, 'due': due.isoformat() if due else '',
+                         'overdue_days': max((as_of - due).days, 0) if due and outstanding and outstanding > 0 else 0})
+    overdue = [{**record, 'amount': record['outstanding']} for record in invoices if record['overdue_days'] > 0]
+    overdue.sort(key=lambda record: record['overdue_days'], reverse=True)
+    known_outstanding = money(sum(record['outstanding'] or 0 for record in invoices))
+    outstanding_total = known_outstanding if unknown < len(invoices) else None
+    anomalies = []
+    if overdue:
+        anomalies.append({'id': 'alert-1', 'type': 'Overdue invoices', 'category': 'Accounts Receivable',
+                          'month': as_of.strftime('%Y-%m'), 'amount': money(sum(record['amount'] for record in overdue)),
+                          'baseline': None, 'increase_pct': None,
+                          'message': f'{len(overdue)} customer invoice(s) remain overdue as of {as_of.isoformat()}.',
+                          'invoices': overdue[:15], 'evidence': [], 'evidence_count': len(overdue), 'history': [],
+                          'method': f'Known outstanding balance above zero and due date before {as_of.isoformat()}.',
+                          'action': 'Confirm the remaining balance and expected payment date with the customer.'})
+    totals = dict.fromkeys(('cash_in', 'cash_out', 'net', 'closing_cash', 'last_month_cash_in',
+                           'last_month_cash_out', 'last_month_net', 'last_month_invoiced_revenue',
+                           'cash_in_change_pct', 'expense_change_pct', 'subscription_monthly', 'subscription_annual'))
+    totals.update({'outstanding_invoices': outstanding_total, 'overdue_invoices': len(overdue),
+                   'invoice_amount': money(sum(record['amount'] for record in invoices)),
+                   'unknown_invoice_balances': unknown,
+                   'missing_invoice_due_dates': sum(not record['due'] for record in invoices)})
+    return {'company': _short(profile.get('Business Name') or 'Your business', 65), 'currency': 'USD',
+            'analysis_kind': 'invoices', 'data_scope': 'customer_invoices', 'as_of': as_of.isoformat(),
+            'reporting_period': f'Invoice review as of {as_of.isoformat()}', 'transaction_count': 0,
+            'invoice_count': len(invoices), 'months_count': 0, 'has_revenue_data': False,
+            'has_invoice_data': True, 'has_subscription_data': False, 'has_opening_cash': False,
+            'forecast_available': False, 'totals': totals, 'monthly': [], 'forecast': [], 'categories': [],
+            'invoices': invoices, 'subscriptions': [], 'anomalies': anomalies, 'overdue_invoices': overdue[:15],
+            'recent_category_comparison': [], 'recent_transactions': [], 'wrapped': None,
+            'limitations': ['Customer invoices do not establish that cash was collected.',
+                            'Cash movements, closing cash and cash forecasts need transaction records.',
+                            'Unknown invoice balances are excluded from the known outstanding subtotal.',
+                            f'Overdue invoices are evaluated as of {as_of.isoformat()}.']}
+
+
 def analyze(data):
     source = data.get('Transactions') or []
     if not source:
+        if data.get('Invoices'):
+            return analyze_invoices(data)
         raise ValueError('A Transactions worksheet with at least one record is required.')
     months = defaultdict(lambda: {'cash_in': 0.0, 'cash_out': 0.0, 'categories': defaultdict(float)})
     categories = defaultdict(float)
@@ -88,10 +149,16 @@ def analyze(data):
     last = max(months)
     first = min(months)
     cash_opening = 0.0
+    has_opening_cash = False
     for item in data.get('Business Profile', []):
         if str(item.get('Field', '')).strip() == 'Opening Cash Balance (USD)':
-            cash_opening = num(item.get('Value'))
+            opening = num(item.get('Value'), None)
+            if opening is not None:
+                cash_opening = opening
+                has_opening_cash = True
     profile = {str(r.get('Field')): r.get('Value') for r in data.get('Business Profile', [])}
+    scope = profile.get('Data Scope') or 'complete'
+    has_opening_cash = has_opening_cash and scope == 'complete'
     company = _short(profile.get('Business Name') or 'Your business', 65)
     currency = _short(profile.get('Currency') or 'USD', 8)
     monthly = []
@@ -102,7 +169,7 @@ def analyze(data):
         inc, exp = money(values['cash_in']), money(values['cash_out'])
         balance = money(balance + inc - exp)
         monthly.append({'month': cursor, 'cash_in': inc, 'cash_out': exp,
-                        'net': money(inc-exp), 'closing_cash': balance})
+                        'net': money(inc-exp), 'closing_cash': balance if has_opening_cash else None})
         cursor = add_month(cursor, 1)
     last3 = monthly[-3:]
     recent = last3[-1]
@@ -249,14 +316,15 @@ def analyze(data):
     category_items = sorted([{'category':k,'amount':money(v)} for k,v in categories.items()],key=lambda x:-x['amount'])
     totals = {'cash_in':money(sum(m['cash_in'] for m in monthly)),
               'cash_out':money(sum(m['cash_out'] for m in monthly)),
-              'net':money(sum(m['net'] for m in monthly)), 'closing_cash':money(balance),
+              'net':money(sum(m['net'] for m in monthly)), 'closing_cash':money(balance) if has_opening_cash else None,
               'last_month_cash_in':recent['cash_in'], 'last_month_cash_out':recent['cash_out'],
               'last_month_net':recent['net'], 'last_month_invoiced_revenue':recent['invoiced_revenue'],
               'cash_in_change_pct':round(100*(recent['cash_in']/prev['cash_in']-1),1) if prev['cash_in'] else None,
               'expense_change_pct':round(100*(recent['cash_out']/prev['cash_out']-1),1) if prev['cash_out'] else None,
-              'outstanding_invoices':money(outstanding_total),'overdue_invoices':len(invoices_overdue),
-              'subscription_monthly':money(sum(s['monthly_cost'] for s in subs)),
-              'subscription_annual':money(sum(s['annual_cost'] for s in subs))}
+              'outstanding_invoices':money(outstanding_total) if data.get('Invoices') else None,
+              'overdue_invoices':len(invoices_overdue) if data.get('Invoices') else None,
+              'subscription_monthly':money(sum(s['monthly_cost'] for s in subs)) if data.get('Subscriptions') else None,
+              'subscription_annual':money(sum(s['annual_cost'] for s in subs)) if data.get('Subscriptions') else None}
     past_12 = monthly[-12:]
     highest = max(past_12, key=lambda r:r['cash_out'])
     wrapped = {'period':f'{past_12[0]["month"]} to {last}',
@@ -269,11 +337,15 @@ def analyze(data):
                'subscription_annual':totals['subscription_annual'],
                'financial_headline': 'Your money, explained.'}
     # Top recent records only. Source sheets are never sent to the LLM in full.
+    # Reviewed partial PDFs describe only the selected records, not a complete cash outlook.
+    forecast_available = scope == 'complete' and (len(monthly) >= 3 or 'Data Scope' not in profile)
     return {'company':company,'currency':currency,'reporting_period':f'{first} to {last}',
+            'analysis_kind':'transactions', 'data_scope':scope, 'has_opening_cash':has_opening_cash,
+            'has_subscription_data':bool(data.get('Subscriptions')), 'forecast_available':forecast_available,
             'as_of':as_of.isoformat(), 'transaction_count':len(normalized),
             'months_count':len(monthly), 'has_revenue_data':bool(data.get('Revenue')),
             'has_invoice_data':bool(data.get('Invoices')), 'totals':totals,
-            'monthly':monthly, 'forecast':future,'categories':category_items[:12],
+            'monthly':monthly, 'forecast':future if forecast_available else [],'categories':category_items[:12],
             'subscriptions':subs,'anomalies':anomalies[:24], 'overdue_invoices':invoices_overdue[:15],
             'recent_category_comparison':recent_category_comparison[:20],
             'wrapped':wrapped,'recent_transactions':list(reversed(normalized))[:100],
@@ -281,4 +353,6 @@ def analyze(data):
                             'Forecasts are illustrative heuristic estimates, not trained ML predictions.',
                             'Expense outflows include payroll and subscriptions; do not add related source sheets again.',
                             'Subscription usage is unknown from bank transactions alone.',
-                            'A projected net cash loss does not by itself prove a cash shortage.']}
+                            'A projected net cash loss does not by itself prove a cash shortage.',
+                            'Without supplied opening cash and a complete ledger, closing cash is unknown.',
+                            f'Transaction coverage: {scope}. Totals describe only the uploaded records.']}

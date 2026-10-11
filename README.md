@@ -6,7 +6,7 @@ FINOVA is a working Hack Midwest 2026 MVP for turning business financial records
 ## The first version already works
 
 - Open a visual dashboard containing 33 months of fictional business data from `data/finova.xlsx`.
-- Upload your own **.xlsx** workbook or **.csv** transactions file and recalculate all available metrics.
+- Upload your own **.xlsx** workbook, **.csv** transactions file, or **.pdf** bank statement/customer invoice. Review PDF records before analysis; PDF extraction requires the optional tools below.
 - Analyze cash receipts, payments, net cash movement, categories, and invoice-based revenue separately.
 - Detect unusually high category spending, subscription price increases, and late invoices.
 - Explore an illustrative three-month cash and invoiced-revenue forecast with a what-if calculator.
@@ -93,7 +93,7 @@ The default workbook `data/finova.xlsx` contains:
 | `Subscriptions` | Registry of recurring software costs |
 | `Monthly Summary` | Reference totals, not re-added to financial ledger |
 
-For custom Excel, only a `Transactions` sheet is required. For cash, at minimum include these headers:
+For custom Excel cash analysis, only a `Transactions` sheet is required. An invoice-only workbook with an `Invoices` sheet can instead produce a customer invoice report without a cash ledger. For transactions, use these headers:
 
 `Date`, `Type`, `Category`, `Description`, `Amount_USD`
 
@@ -113,12 +113,57 @@ Date,Type,Category,Description,Amount_USD
 
 Financial metrics available from a CSV will be limited to the fields provided; invoice and subscription details require the corresponding sheets.
 
+### PDF: start with the records you have
+
+Clients do not need the complete demo workbook. FINOVA can start with a PDF bank statement, a transaction report, or a customer invoice in USD.
+
+1. Upload a PDF with the same **Upload financial data** button.
+2. FINOVA extracts text locally and uses OCR for scanned pages when the optional tools are installed.
+3. Check the proposed document type and every extracted row. Correct dates, amounts, categories, and income/expense direction; uncheck rows to exclude them, and add any missing records.
+4. For a statement, select its coverage: selected records/one account, expenses only, receipts only, or all cash transactions for the period. Opening cash is optional and available only for a complete cash ledger.
+5. For customer invoices, confirm IDs, customers, due dates, invoice amounts, outstanding balances, and payment status. Select the date to use for overdue checks. A paid invoice does not by itself establish a cash receipt.
+6. Confirm the review to replace the current dataset and run analysis. Uploading, editing, or cancelling a PDF draft leaves the existing dashboard intact.
+
+**Supported initial layouts:** English documents with one dated transaction per line, ISO dates or U.S. dates including the year, amounts with two decimal places, and explicit income/expense, signed amounts, or debit/credit columns. Common running-balance columns are excluded from proposed payment amounts. Customer invoice extraction recognizes labels such as Invoice Number, Bill To, Invoice Date, Due Date, Total, and Amount Due.
+
+This importer does not understand every bank or invoice layout. Wrapped rows, missing years, unusual tables, and OCR errors can need manual corrections. Unsigned amounts with no clear direction require the user to choose Income or Expense. Unsupported layouts can be entered manually using the extracted source text. **Retry with OCR** is available for PDFs whose text layer is incomplete.
+
+Limits: **12 MB**, **20 pages**, up to **5 scanned/OCR pages**, and **1,000 reviewed records** per PDF. Reviews expire after 15 minutes. Password-protected or damaged PDFs are rejected. Records must be USD; currency conversion is not included. Vendor bills and payroll registers are not independently modeled; include only actual payments in transaction analysis.
+
+PDF confirmation JSON is capped at **2 MiB** so reviewed record batches fit; other JSON endpoints retain an **8 KiB** limit. The deployment proxy template uses the same limits. PDF upload, confirmation, cancellation, and OCR retry use the same authentication, session isolation, and request checks as other routes.
+
+Extraction has a 60-second processing budget, and the browser stops waiting for PDF uploads after 75 seconds. Upload errors stay visible until the next upload. If the screen asks you to restart FINOVA, stop the old process with **Ctrl+C**, run `python3 run.py` again from this folder, and reload the browser; the running Python server must be restarted to load the PDF routes.
+
+Try the fictional files in [data/pdf_examples](data/pdf_examples): `bank-statement.pdf`, `customer-invoice.pdf`, and `scanned-bank-statement.pdf`.
+
+Partial statements describe the uploaded records. Closing cash requires opening cash plus a complete cash ledger. Reviewed PDF cash forecasts additionally require at least three months of history and complete coverage. Customer invoice reports display known outstanding balances and unknown payment balances separately, with cash metrics and forecasts unavailable.
+
+### Optional PDF tools
+
+CSV, Excel, and the demo still run with Python's standard library alone. PDF support additionally needs the [Poppler command-line tools](https://poppler.freedesktop.org/) on the server's PATH: `pdfinfo` and `pdftotext`. Scanned PDFs need `pdftoppm`, [Tesseract](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html), and its English language data.
+
+On Ubuntu/Debian:
+
+```bash
+sudo apt install poppler-utils tesseract-ocr tesseract-ocr-eng
+```
+
+On macOS or Windows, install Poppler and Tesseract for your platform and add their executables to PATH. Check installation with:
+
+```bash
+pdfinfo -v
+pdftotext -v
+tesseract --version
+```
+
+The upload screen reports whether PDF extraction is available. Processing is local; PDF files are written into a temporary directory that is cleaned up after extraction. No PDF or OCR data is sent to an AI service for extraction.
+
 ## 4 — How the calculations work
 
 - **Cash receipts** = all positive transaction cash inflows.
 - **Cash payments** = all recorded expense cash outflows.
 - **Cash movement** = cash receipts − cash payments.
-- **Estimated closing cash** = supplied opening cash + cumulative cash movement. Missing opening cash defaults to zero and is not a verified bank balance.
+- **Estimated closing cash** = supplied opening cash + cumulative cash movement for a complete ledger. Without an opening balance or with declared partial coverage, closing cash is shown as not provided.
 - **Invoiced revenue** comes from `Revenue` instead of treating deposits as sales.
 - **Upcoming forecasts** use 70% recent 3-month average plus 30% prior-year corresponding month where available. They are *heuristics*, **not trained ML models** and their illustrative intervals are not statistical confidence intervals.
 - **Price increase detection** compares the latest recorded subscription charge to its first recorded price.
@@ -141,7 +186,7 @@ On macOS/Linux:
 python3 -m unittest discover -s tests -v
 ```
 
-The tests cover financial calculations, CSV/XLSX parsing, proxy authentication, session isolation, request limits, and secret handling. They never require live AI credentials.
+Tests cover financial reconciliations, anomalies, cash balances, forecasting, CSV/XLSX parsing, PDF extraction and OCR, invoice-only analysis, the review/confirmation lifecycle, proxy authentication, session isolation, request limits, and secret handling. They never require live AI credentials. Actual PDF/OCR integration tests are skipped if their optional system tools are not installed.
 
 ## 6 — Architecture
 
@@ -151,6 +196,8 @@ Web browser (HTML / CSS / vanilla JavaScript)
    ▼
 Python ThreadingHTTPServer (server.py)
    ├─ XLSX and CSV reader (xlsx_reader.py, stdlib zipfile + XML)
+   ├─ PDF drafts (pdf_reader.py, local Poppler + optional Tesseract)
+   │    └─ Browser review → confirmation → validated financial records
    ├─ Financial calculations (finance.py, stdlib statistics)
    ├─ Offline Q&A based on computed metrics
    └─ Akamai workshop API via HTTPS (optional)

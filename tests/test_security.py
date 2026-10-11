@@ -35,6 +35,7 @@ def multipart(blob=CSV, filename='example.csv', extra=False):
 class HTTPBoundaryTests(unittest.TestCase):
     def setUp(self):
         server.SESSIONS.clear()
+        server.PENDING_IMPORTS.clear()
         self.backend = FinovaHTTPServer(('127.0.0.1', 0), server.Handler,
                                        SecuritySettings('proxy', ORIGIN, PROXY_TOKEN))
         self.thread = threading.Thread(target=self.backend.serve_forever, daemon=True)
@@ -45,6 +46,7 @@ class HTTPBoundaryTests(unittest.TestCase):
         self.backend.server_close()
         self.thread.join()
         server.SESSIONS.clear()
+        server.PENDING_IMPORTS.clear()
 
     def request(self, method='GET', path='/api/dashboard', body=None, headers=None, trusted=True):
         supplied = {'Host': 'finova.example.com'}
@@ -66,6 +68,7 @@ class HTTPBoundaryTests(unittest.TestCase):
     def test_every_sensitive_route_rejects_direct_or_spoofed_proxy_access(self):
         for method, path in [('GET', '/api/health'), ('GET', '/api/dashboard'),
                              ('GET', '/api/akamai-test'), ('POST', '/api/upload'),
+                             ('POST', '/api/pdf/confirm'), ('POST', '/api/pdf/cancel'),
                              ('POST', '/api/reset'), ('POST', '/api/ask'), ('POST', '/api/cover')]:
             with self.subTest(path=path):
                 with patch.object(server, 'call_akamai') as upstream:
@@ -104,6 +107,7 @@ class HTTPBoundaryTests(unittest.TestCase):
                 self.assertEqual(self.request(path=path, headers=headers)[0], 403)
                 upstream.assert_not_called()
         for method, path in [('POST', '/'), ('POST', '/api/upload'), ('POST', '/api/reset'),
+                             ('POST', '/api/pdf/confirm'), ('POST', '/api/pdf/cancel'),
                              ('POST', '/api/ask'), ('POST', '/api/cover')]:
             with self.subTest(method=method, path=path):
                 self.assertEqual(self.request(method, path, '{}', headers)[0], 403)
@@ -139,10 +143,65 @@ class HTTPBoundaryTests(unittest.TestCase):
         with patch.object(server, 'MAX_SESSIONS', 1):
             self.assertEqual(self.request()[0], 200)
             self.assertEqual(self.request()[0], 503)
-            for entry in server.SESSIONS.values():
+            for sid, entry in server.SESSIONS.items():
                 entry['seen'] = time.monotonic() - server.SESSION_TTL - 1
+                server.PENDING_IMPORTS[sid] = {'created': time.monotonic()}
             self.assertEqual(self.request()[0], 200)
             self.assertEqual(len(server.SESSIONS), 1)
+            self.assertFalse(server.PENDING_IMPORTS)
+
+    def test_pdf_review_preserves_authenticated_session_and_large_record_payload(self):
+        _, response_headers, _ = self.request()
+        cookie = response_headers['Set-Cookie'].split(';')[0]
+        sid = cookie.split('=', 1)[1]
+        document = {'filename': 'bank.pdf', 'pages': 1, 'used_ocr': False}
+        with patch.object(server, 'preview_pdf', return_value=document):
+            status, _, blob = self.request('POST', '/api/upload', multipart(b'%PDF-1.4 fixture', 'bank.pdf'),
+                                           {'Cookie': cookie, 'Content-Type': 'multipart/form-data; boundary=finova-test'})
+        self.assertEqual(status, 200)
+        self.assertIs(server.SESSIONS[sid]['data'], server.DEFAULT_RESULT)
+        payload = {'review_token': json.loads(blob)['review_token'], 'kind': 'transactions', 'confirmed': True,
+                   'rows': [{'Date': '2026-09-01', 'Type': 'Income', 'Amount_USD': 1,
+                             'Description': 'Customer payment ' * 5} for _ in range(100)]}
+        body = json.dumps(payload)
+        self.assertGreater(len(body), server.MAX_JSON_BODY)
+        self.assertEqual(self.request('POST', '/api/pdf/confirm', body,
+                                     {'Cookie': cookie, 'X-Finova-User': 'bob'})[0], 400)
+        self.assertIs(server.SESSIONS[sid]['data'], server.DEFAULT_RESULT)
+        for path in ('/api/pdf/confirm', '/api/pdf/cancel'):
+            self.assertEqual(self.request('POST', path, body,
+                                         {'Cookie': cookie, 'X-Finova-Request': ''})[0], 403)
+        status, _, blob = self.request('POST', '/api/pdf/confirm', body, {'Cookie': cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(blob)['summary']['totals']['cash_in'], 100)
+        self.assertEqual(server.SESSIONS[sid]['user'], 'alice')
+        self.assertNotIn(sid, server.PENDING_IMPORTS)
+        _, _, dashboard = self.request(headers={'Cookie': cookie})
+        self.assertEqual(json.loads(dashboard)['transaction_count'], 100)
+        self.assertEqual(self.request('POST', '/api/reset', '{}', {'Cookie': cookie})[0], 200)
+        self.assertIs(server.SESSIONS[sid]['data'], server.DEFAULT_RESULT)
+
+    def test_pdf_review_has_bounded_json_and_cancel_keeps_small_request_limit(self):
+        with patch.object(server, 'MAX_PDF_REVIEW_BODY', 128):
+            self.assertEqual(self.request('POST', '/api/pdf/confirm', b'x' * 129)[0], 413)
+        self.assertEqual(self.request('POST', '/api/pdf/cancel', b'x' * (server.MAX_JSON_BODY + 1))[0], 413)
+        self.assertEqual(self.request('POST', '/api/pdf/confirm', '{}', {'Content-Type': 'text/plain'})[0], 415)
+
+    def test_pdf_ocr_retry_allows_only_one_boolean_control_field(self):
+        def with_field(body, name='ocr', value='true', count=1):
+            field = (f'--finova-test\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                     f'{value}\r\n').encode()
+            return body.replace(b'--finova-test--\r\n', field * count + b'--finova-test--\r\n')
+        headers = {'Content-Type': 'multipart/form-data; boundary=finova-test'}
+        document = {'filename': 'bank.pdf', 'pages': 1, 'used_ocr': True}
+        pdf = multipart(b'%PDF-1.4 fixture', 'bank.pdf')
+        with patch.object(server, 'preview_pdf', return_value=document) as preview:
+            self.assertEqual(self.request('POST', '/api/upload', with_field(pdf), headers)[0], 200)
+            self.assertTrue(preview.call_args.kwargs['force_ocr'])
+            for body in (with_field(pdf, count=2), with_field(pdf, name='unexpected'),
+                         with_field(pdf, value='invalid'), with_field(multipart())):
+                with self.subTest(body_length=len(body)):
+                    self.assertEqual(self.request('POST', '/api/upload', body, headers)[0], 400)
 
     def test_rejects_large_json_file_and_multiple_uploads(self):
         self.assertEqual(self.request('POST', '/api/ask', b'x' * (server.MAX_JSON_BODY + 1))[0], 413)

@@ -153,9 +153,17 @@ Use two operator accounts and separate browser profiles: upload a fictional CSV
 in one, and confirm the other retains its own data. Verify that normal uploads
 and local Q&A work; uploads over 12 MiB, malformed/multiple file parts, oversized
 JSON, foreign Origins, and POSTs without `X-Finova-Request` fail. The importer
+accepts PDF uploads with a separate review step and an optional boolean OCR field.
+PDF confirmation accepts up to 2 MiB of JSON for reviewed rows; other JSON routes
+are capped at 8 KiB. Confirm/cancel routes require the same authenticated proxy
+and CSRF marker, and reviews stay bound to the authenticated user's session.
+The CSV/XLSX importer
 also caps decompressed ZIP bytes, ZIP entries, sheets, rows, columns, and cells,
-and rejects XML entities. Files stay in memory; nginx may temporarily buffer
-requests in its private temporary directory. Do not configure a public upload
+and rejects XML entities. CSV/XLSX uploads are processed in memory; PDFs use a
+private temporary extraction directory that is cleaned up after processing.
+Install the optional PDF/OCR tools listed in the project README to enable this
+feature. nginx may temporarily buffer requests in its private temporary
+directory. Do not configure a public upload
 directory. Rotate/restrict nginx logs and keep request bodies out of logs.
 
 ## Secrets and publication

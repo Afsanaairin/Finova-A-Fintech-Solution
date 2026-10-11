@@ -73,3 +73,55 @@
 .evidence-table{font-size:10px}.evidence-table th,.evidence-table td{padding:10px 8px}.evidence-table td small{display:block;color:#7c899c;font-size:9px;margin-top:4px}
 .anomaly-action{background:#e9f8f4;border:1px solid #cbede4;border-radius:12px;padding:14px;margin:20px 0 15px}.anomaly-action strong{color:#146e61}.anomaly-action p{margin-top:5px}
 @media(max-width:1100px){.anomaly-workspace{grid-template-columns:1fr}}
+/* Financial cards: a brief explanation and a separate expandable breakdown. */
+.anomaly-summary-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.financial-cards-grid{align-items:start}
+.financial-card{position:relative;min-width:0}
+.financial-card>small{min-height:30px;overflow-wrap:anywhere}
+.financial-card-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:28px}
+.financial-card-heading>span{line-height:1.5}
+.financial-card-info{display:grid;place-items:center;flex:none;width:28px;height:28px;padding:0;background:transparent;border:0;border-radius:50%;color:#788397;font-size:15px}
+.financial-card-info:hover,.financial-card-info[aria-expanded=true]{background:#e8f8f3;color:#159b89}
+.financial-card-info:focus-visible,.financial-card-toggle:focus-visible{outline:2px solid #17a994;outline-offset:2px}
+.financial-card>.metric-positive{color:#0da78d}
+.financial-card>.metric-negative{color:#c15d5d}
+.financial-card-tooltip{position:fixed;z-index:50;width:min(280px,calc(100vw - 32px));margin:0;padding:12px 14px;background:#142d4d;color:#fff;border-radius:10px;box-shadow:0 8px 25px #13244320;font-size:11px;line-height:1.6}
+.financial-card-toggle{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:15px;border:1px solid #dfe7ef;border-radius:24px;padding:8px 10px;background:#fff;color:#53657a;font-family:inherit;font-size:11px}
+.financial-card-toggle:hover{background:#f4faf8;border-color:#b7ded1}
+.financial-card-toggle[aria-expanded=true]{border-color:#b7ded1;color:#0c8675}
+.financial-card-toggle span{color:inherit;font-size:11px;font-weight:500}
+.financial-card-toggle b{font-size:13px;font-weight:500}
+.financial-card-breakdown{margin-top:15px;padding-top:12px;border-top:1px solid #e7ecf3;font-size:11px}
+.financial-breakdown-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:7px 0;line-height:1.6}
+.financial-breakdown-row span{min-width:0;overflow-wrap:anywhere;font-size:11px;color:#69788d;font-weight:400}
+.financial-breakdown-row>b{flex:0 1 auto;min-width:0;max-width:60%;overflow-wrap:anywhere;text-align:right;color:#203555;font-size:12px;font-weight:750}
+.financial-breakdown-total{border-top:1px solid #e7ecf3;margin-top:6px;padding-top:12px}
+.financial-breakdown-total>b{color:#0c8675}
+.financial-breakdown-total>.financial-value-negative{color:#c15d5d}
+.financial-breakdown-note{font-size:10px;color:#8a97a8;line-height:1.65;margin:10px 0 0}
+@media(max-width:1100px){.anomaly-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.anomaly-summary-grid{grid-template-columns:1fr}}
+.pdf-review{margin-bottom:24px;border-color:#82cfc0}
+.pdf-review h2{font-size:22px;margin:7px 0 10px}
+.pdf-review-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:20px 0}
+.pdf-review-settings label{display:grid;gap:7px;font-size:12px;color:#43526a;font-weight:700}
+.pdf-review input:not([type=checkbox]),.pdf-review select{font:inherit;border:1px solid #cad6e1;border-radius:7px;background:#fff;color:#203555;padding:9px;box-sizing:border-box}
+.pdf-review input:focus-visible,.pdf-review select:focus-visible{outline:2px solid #17a994;outline-offset:1px}
+.pdf-review .pdf-review-help{font-size:12px;line-height:1.7;margin-bottom:14px}
+#pdf-row-count{font-size:12px;margin:12px 0;color:#166e62}
+.pdf-review-table{min-width:1100px;font-size:12px;margin-bottom:16px}
+.pdf-review-table th,.pdf-review-table td{padding:10px 7px;vertical-align:top}
+.pdf-review-table input:not([type=checkbox]){width:150px;max-width:100%}
+.pdf-review-table input[type=number]{width:125px}
+.pdf-review-table select{width:135px}
+.pdf-record-source{min-width:180px;max-width:240px;font-size:11px;overflow-wrap:anywhere}
+.pdf-record-source small,.pdf-record-source strong{display:block;margin-top:6px;font-size:10px;line-height:1.5;font-weight:400;color:#738297}
+.pdf-record-source strong{color:#94602a}
+.pdf-source{margin-top:20px;font-size:12px;color:#335979}
+.pdf-source summary{cursor:pointer;font-weight:700;padding:10px 0}
+.pdf-source pre{max-height:320px;overflow:auto;white-space:pre-wrap;background:#f5f8fc;padding:16px;border-radius:10px;font-size:11px;line-height:1.7}
+.pdf-confirmation{display:flex;align-items:flex-start;gap:9px;font-size:12px;color:#38546d;line-height:1.6;margin:20px 0}
+.pdf-confirmation input{margin-top:4px;accent-color:#149d89;flex-shrink:0}
+.pdf-review-actions{display:flex;flex-wrap:wrap;gap:9px}
+#invoice-overview{margin-bottom:20px}
+#invoice-table td small{display:block;margin-top:5px;color:#7c899c;font-size:10px}

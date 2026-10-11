@@ -27,22 +27,51 @@
     <div class="content">
       <div class="hero"><div><div class="eyebrow">THE FUTURE OF FINANCIAL CLARITY</div><h1 id="page-title">A clearer picture of your business.</h1><p id="page-subtitle">From transactions to foresight. Understand what changed, what matters, and what comes next.</p></div><div class="hero-art" aria-hidden="true"><div class="hero-circle c1"></div><div class="hero-circle c2"></div><div class="hero-circle c3"></div><div class="hero-spark">✦</div></div></div>
       <div id="alert" class="notice hidden" role="status"></div>
-      <section class="upload-strip"><div class="upload-icon">⇧</div><div class="upload-copy"><strong id="loaded-file">Demo workbook: finova.xlsx</strong><span>Upload your .xlsx or .csv file to analyze another business. All workbooks stay in this local demo process.</span></div><label class="button button-primary" for="file-input">Upload financial data<input type="file" id="file-input" accept=".xlsx,.csv" hidden></label><button id="reset-btn" class="button button-muted">Reset demo</button></section>
-      <div id="loading" class="loading">Reading your financial records…</div>
+      <section class="upload-strip"><div class="upload-icon">⇧</div><div class="upload-copy"><strong id="loaded-file">Demo workbook: finova.xlsx</strong><span>Start with the records you have: CSV, Excel, or a PDF bank statement or customer invoice. PDF records are reviewed before analysis.</span><span id="pdf-support-note"></span></div><label class="button button-primary" for="file-input">Upload financial data<input type="file" id="file-input" accept=".xlsx,.csv,.pdf" hidden></label><button id="reset-btn" class="button button-muted">Reset demo</button></section>
+      <div id="upload-error" class="notice error hidden" role="alert"></div>
+      <div id="loading" class="loading" role="status" aria-live="polite">Reading your financial records…</div>
+      <section id="pdf-review" class="panel pdf-review hidden" aria-labelledby="pdf-review-title">
+        <div class="panel-heading"><div><span class="eyebrow">REVIEW BEFORE ANALYSIS</span><h2 id="pdf-review-title">Check your PDF records</h2><p id="pdf-review-description"></p></div></div>
+        <div id="pdf-review-warnings" class="callout"></div>
+        <form id="pdf-review-form">
+          <div class="pdf-review-settings">
+            <label>Document contains<select id="pdf-kind"><option value="transactions">Transactions / bank statement</option><option value="invoices">Customer invoices · money owed to you</option></select></label>
+            <label>Business name<input id="pdf-company" maxlength="65" placeholder="Your business"></label>
+            <label id="pdf-scope-field">Transaction coverage<select id="pdf-scope"><option value="selected">Selected records / one account</option><option value="expenses">Expenses only</option><option value="receipts">Receipts only</option><option value="complete">All cash transactions for this period</option></select></label>
+            <label id="pdf-opening-field" class="hidden">Opening cash for this period (USD)<input id="pdf-opening" type="number" step="0.01" placeholder="Optional"></label>
+            <label id="pdf-as-of-field" class="hidden">Check invoice due dates as of<input id="pdf-as-of" type="date"></label>
+          </div>
+          <p class="pdf-review-help">Edit incorrect fields and uncheck rows to exclude them. Missing rows can be added below. Amounts must be in USD. Invoice payment status must be confirmed separately from the invoice amount.</p>
+          <p id="pdf-row-count" role="status"></p>
+          <div class="table-scroll"><table class="pdf-review-table"><thead id="pdf-review-head"></thead><tbody id="pdf-review-rows"></tbody></table></div>
+          <button id="pdf-add-row" type="button" class="button button-muted">+ Add a missing record</button>
+          <details class="pdf-source"><summary>View extracted source text · compare with the original PDF</summary><pre id="pdf-source-text"></pre></details>
+          <label class="pdf-confirmation"><input id="pdf-confirmed" type="checkbox" required> I checked the included records, confirmed the amounts are USD, and understand this import replaces my current dataset.</label>
+          <div id="pdf-review-error" class="notice error hidden" role="alert"></div>
+          <div class="pdf-review-actions"><button id="pdf-import" type="submit" class="button button-primary">Confirm and analyze</button><button id="pdf-retry-ocr" type="button" class="button button-muted">Retry with OCR</button><button id="pdf-cancel" type="button" class="button button-muted">Cancel</button></div>
+        </form>
+      </section>
+      <div id="data-scope-note" class="notice hidden"></div>
       <div id="overview" class="page">
         <div class="section-heading"><div><span class="eyebrow">FINANCIAL SNAPSHOT</span><h2 id="company-title">Your business overview</h2><p id="report-date">Loading transaction history…</p></div><span class="pill">● Live analysis</span></div>
-        <div class="metrics-grid"><div class="metric-card"><span>Cash received · last month</span><strong id="metric-income">—</strong><small id="income-trend">Cash receipts, not sales revenue</small></div><div class="metric-card"><span>Cash paid · last month</span><strong id="metric-expenses">—</strong><small id="expense-trend">Includes payroll & subscriptions</small></div><div class="metric-card"><span>Net cash movement</span><strong id="metric-net">—</strong><small>Money received minus money paid</small></div><div class="metric-card"><span>Estimated closing cash</span><strong id="metric-balance">—</strong><small>From opening cash + ledger entries</small></div></div>
+        <div id="invoice-overview" class="hidden"><div class="metrics-grid small-grid"><div class="metric-card"><span>Invoice amounts uploaded</span><strong id="invoice-total">—</strong><small>Invoice amounts do not establish cash received</small></div><div class="metric-card"><span>Known outstanding subtotal</span><strong id="invoice-outstanding">—</strong><small id="invoice-unknown">Payment balances checked separately</small></div><div class="metric-card"><span>Overdue customer invoices</span><strong id="invoice-overdue">—</strong><small id="invoice-as-of">At the selected reporting date</small></div></div><article class="panel"><h3>Your customer invoices</h3><div class="table-scroll"><table><thead><tr><th>Customer / invoice</th><th>Due date</th><th>Payment status</th><th class="right">Amount</th><th class="right">Outstanding</th></tr></thead><tbody id="invoice-table"></tbody></table></div></article></div>
+        <div id="cash-metrics" class="metrics-grid financial-cards-grid">
+          <article class="metric-card financial-card" data-card="cash-received"><span>Cash received · last month</span><strong id="metric-income">—</strong><small id="income-trend">Cash receipts, not sales revenue</small></article>
+          <article class="metric-card financial-card" data-card="cash-paid"><span>Cash paid · last month</span><strong id="metric-expenses">—</strong><small id="expense-trend">Uploaded outgoing payments</small></article>
+          <article class="metric-card financial-card" data-card="net-cash"><span>Net cash movement</span><strong id="metric-net">—</strong><small id="net-cash-period">Money received minus money paid</small></article>
+          <article class="metric-card financial-card" data-card="closing-cash"><span>Estimated closing cash</span><strong id="metric-balance">—</strong><small id="balance-note">From opening cash + ledger entries</small></article>
+        </div>
         <div id="revenue-note" class="revenue-note">Invoiced revenue last month: <strong id="billed-revenue">—</strong> <span>Revenue billed to customers is not the same as cash collected.</span></div>
-        <div class="two-col"><article class="panel wide"><div class="panel-heading"><div><h3>Money moving through your business</h3><p>Monthly cash receipts vs. outgoing payments</p></div><span class="legend"><i class="teal"></i> In <i class="purple"></i> Out</span></div><div id="cash-chart" class="chart-host"></div></article><article class="panel"><div class="panel-heading"><div><h3>Top spending areas</h3><p>All uploaded history</p></div></div><div id="category-bars" class="bars"></div></article></div>
+        <div id="cash-panels" class="two-col"><article class="panel wide"><div class="panel-heading"><div><h3>Money moving through your business</h3><p>Monthly cash receipts vs. outgoing payments</p></div><span class="legend"><i class="teal"></i> In <i class="purple"></i> Out</span></div><div id="cash-chart" class="chart-host"></div></article><article class="panel"><div class="panel-heading"><div><h3>Top spending areas</h3><p>All uploaded history</p></div></div><div id="category-bars" class="bars"></div></article></div>
         <div class="two-col"><article class="panel"><div class="panel-heading"><div><h3>What deserves attention?</h3><p>Automatically detected financial patterns</p></div><span class="pill subtle">FINOVA intelligence</span></div><div id="insight-list" class="insight-list"></div><button type="button" class="button button-muted insight-all" id="view-all-anomalies">Explore all anomalies →</button></article><article class="panel ask-panel"><div class="panel-heading"><div><h3>Ask FINOVA anything</h3><p>Grounded answers from verified figures</p></div><span class="ask-spark">✳</span></div><div class="suggestions"><button data-prompt="Why are our expenses changing?">Why have expenses changed?</button><button data-prompt="What subscriptions should we review?">Review subscriptions</button><button data-prompt="What are our biggest upcoming financial risks?">Upcoming risks</button></div><form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label><input id="question" maxlength="500" placeholder="Ask about expenses, invoices, next month…" required><button type="submit" aria-label="Ask FINOVA">➜</button></form><div id="ai-mode" class="ai-mode">FINOVA can answer using verified local calculations.</div><div id="ai-answer" class="ai-answer"><span>✦</span> Your financial intelligence assistant is ready.</div><small id="ai-source">Answers use the uploaded data, not invented transactions.</small></article></div>
       </div>
       <div id="anomalies" class="page hidden">
         <div class="section-heading"><div><span class="eyebrow">FINOVA · FINANCIAL RISK INTELLIGENCE</span><h2>Anomaly Explorer</h2><p>Every flag has a calculation, supporting records and a practical next step. These are signals to review, not proof of fraud.</p></div><span class="pill amber">Rule-based detection</span></div>
-        <div class="metrics-grid small-grid">
-          <div class="metric-card"><span>Patterns flagged</span><strong id="anomaly-count">—</strong><small>Across the uploaded reporting period</small></div>
-          <div class="metric-card"><span>Expense spending spikes</span><strong id="spike-count">—</strong><small>Above typical recent amounts</small></div>
-          <div class="metric-card"><span>Subscription changes</span><strong id="price-count">—</strong><small>Recorded price increases</small></div>
-          <div class="metric-card"><span>Overdue invoices</span><strong id="overdue-count">—</strong><small>As of the data reporting date</small></div>
+        <div class="metrics-grid anomaly-summary-grid financial-cards-grid">
+          <article class="metric-card financial-card" data-card="patterns"><span>Patterns flagged</span><strong id="anomaly-count">—</strong><small id="patterns-context">Across the uploaded reporting period</small></article>
+          <article class="metric-card financial-card" data-card="spikes"><span>Expense spending spikes</span><strong id="spike-count">—</strong><small id="spikes-context">Above typical recent amounts</small></article>
+          <article class="metric-card financial-card" data-card="subscriptions"><span>Subscription changes</span><strong id="price-count">—</strong><small id="subscriptions-context">Recorded price increases</small></article>
+          <article class="metric-card financial-card" data-card="overdue"><span>Overdue invoices</span><strong id="overdue-count">—</strong><small id="overdue-context">As of the data reporting date</small></article>
         </div>
         <div class="anomaly-workspace">
           <article class="panel anomaly-list-panel"><div class="panel-heading"><div><h3>Financial signals</h3><p>Choose a flag to investigate</p></div></div>
@@ -90,5 +119,6 @@
   </main>
 </div>
 <script src="/static/wrapped.js" defer></script>
+<script src="/static/pdf-upload.js" defer></script>
 <script src="/static/app.js" defer></script>
 </body></html>

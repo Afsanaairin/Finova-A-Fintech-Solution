@@ -15,15 +15,19 @@ from urllib.parse import urlsplit
 from finance import analyze
 from security import FinovaHTTPServer, SecuritySettings
 from xlsx_reader import read_data
+from pdf_reader import pdf_capabilities, preview_pdf, reviewed_data
 
 BASE = Path(__file__).resolve().parent
 MAX_UPLOAD = 12 * 1024 * 1024
 MAX_UPLOAD_BODY = MAX_UPLOAD + 64 * 1024  # Multipart envelope allowance.
 MAX_JSON_BODY = 8 * 1024
+MAX_PDF_REVIEW_BODY = 2 * 1024 * 1024  # Reviewed records, bounded separately from chat requests.
 MAX_SESSIONS = 32
 SESSION_TTL = 60 * 60
 DATA_LOCK = threading.Lock()
 SESSIONS = {}
+PENDING_IMPORTS = {}
+PDF_REVIEW_SECONDS = 15 * 60
 
 
 class NoUpstreamRedirects(request.HTTPRedirectHandler):
@@ -108,6 +112,14 @@ def offline_answer(question, summary):
                     f"Method: {finding.get('method','historical comparison')} "
                     f"Suggested next step: {finding.get('action','Review source records.')} "
                     'This is a signal to investigate, not proof of wrongdoing.')
+    if summary.get('analysis_kind') == 'invoices':
+        outstanding = totals['outstanding_invoices']
+        value = f'${outstanding:,.2f}' if outstanding is not None else 'not known'
+        unknown = totals['unknown_invoice_balances']
+        return (f"FINOVA reviewed {summary['invoice_count']} customer invoice(s). As of {summary['as_of']}, "
+                f"the known outstanding subtotal is {value}; {totals['overdue_invoices']} invoice(s) are overdue. "
+                f"Payment balances are unknown for {unknown} invoice(s). "
+                'Invoices alone do not establish cash received. Upload transaction records for cash movements and forecasts.')
     if 'subscr' in q or 'software' in q or 'adobe' in q or 'canva' in q:
         s = summary['subscriptions']
         if not s:
@@ -119,6 +131,8 @@ def offline_answer(question, summary):
                 f"(${totals['subscription_annual']:,.2f} annualized).{detail} "
                 'Payments do not prove whether a subscription was actually used.')
     if 'invoice' in q or 'late' in q or 'unpaid' in q or 'receivable' in q:
+        if not summary.get('has_invoice_data'):
+            return 'No customer invoice records were provided. Upload customer invoices to check outstanding balances and overdue dates.'
         inv = summary['overdue_invoices'][:3]
         detail = ' Examples: ' + '; '.join(f"{i['customer']} / {i['invoice']}: ${i['amount']:,.2f}, "
                               f"{i['overdue_days']} days overdue" for i in inv) if inv else ''
@@ -126,6 +140,9 @@ def offline_answer(question, summary):
                 f"${totals['outstanding_invoices']:,.2f}; {totals['overdue_invoices']} "
                 f"are overdue.{detail} Check with customers before assuming collection dates.")
     if 'forecast' in q or 'next month' in q or 'upcoming' in q or 'cash' in q or 'future' in q:
+        if not summary['forecast']:
+            return ('A business cash forecast is unavailable for this import. '
+                    'Provide a complete cash ledger covering at least three months; selected payments describe only the uploaded records.')
         f = summary['forecast'][0]
         return (f"For {f['month']}, projected cash receipts are ${f['cash_in']:,.2f} "
                 f"and payments are ${f['cash_out']:,.2f}; net movement is "
@@ -163,6 +180,8 @@ def ai_answer(question, summary):
     # transaction drilldowns stay local and are never shipped to the LLM.
     metrics = {k:summary[k] for k in ['company','as_of','reporting_period',
                 'transaction_count','totals','forecast','limitations']}
+    metrics.update({key: summary.get(key) for key in ('analysis_kind', 'data_scope', 'has_opening_cash',
+                                                    'has_invoice_data', 'has_subscription_data', 'forecast_available')})
     metrics['anomalies'] = [{k:a.get(k) for k in
               ('type','category','month','amount','baseline','increase_pct','message')}
               for a in summary['anomalies'][:10]]
@@ -247,6 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         with DATA_LOCK:
             for expired in [key for key, entry in SESSIONS.items() if now - entry['seen'] >= SESSION_TTL]:
                 del SESSIONS[expired]
+                PENDING_IMPORTS.pop(expired, None)
             entry = SESSIONS.get(sid)
             if entry is None or entry['user'] != self._user:
                 if len(SESSIONS) >= MAX_SESSIONS:
@@ -256,6 +276,11 @@ class Handler(BaseHTTPRequestHandler):
                 entry = SESSIONS[sid] = {'data': DEFAULT_RESULT, 'user': self._user, 'seen': now}
             entry['seen'] = now
         self._set_cookie = sid
+        with DATA_LOCK:
+            expired = [key for key, review in PENDING_IMPORTS.items()
+                       if time.monotonic() - review['created'] > PDF_REVIEW_SECONDS]
+            for key in expired:
+                PENDING_IMPORTS.pop(key, None)
         return sid
 
     def send_bytes(self, status, body, content_type='application/json; charset=utf-8'):
@@ -288,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == '/api/health':
             return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_key_loaded':akamai_configured(), 'akamai_connected':False,
+                                       'pdf_support':pdf_capabilities(),
                                        'mode':'Akamai key loaded; connection not verified' if akamai_configured() else 'Offline demo' })
         if path == '/api/akamai-test':
             if not akamai_configured():
@@ -314,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
             with DATA_LOCK:
                 data = SESSIONS[sid]['data']
             return self.send_json(200, data)
-        if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js'):
+        if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js','/static/pdf-upload.js'):
             file = BASE/'static'/('index.html' if path=='/' else path.removeprefix('/static/'))
             return self.send_bytes(200,file.read_bytes(),{'html':'text/html; charset=utf-8','css':'text/css; charset=utf-8','js':'text/javascript; charset=utf-8'}[file.suffix.lstrip('.')] if file.suffix!='.html' else 'text/html; charset=utf-8')
         return self.send_json(404,{'error':'Not found'})
@@ -323,7 +349,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorize():
             return
         path = urlsplit(self.path).path
-        if path not in ('/api/upload', '/api/reset', '/api/ask', '/api/cover'):
+        if path not in ('/api/upload', '/api/pdf/confirm', '/api/pdf/cancel', '/api/reset', '/api/ask', '/api/cover'):
             return self.send_json(404, {'error': 'Unknown endpoint.'})
         try:
             if self.headers.get_all('Transfer-Encoding'):
@@ -335,6 +361,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {'error': 'Invalid Content-Length.'})
             length = int(lengths[0])
             maximum = MAX_UPLOAD_BODY if path == '/api/upload' else MAX_JSON_BODY
+            if path == '/api/pdf/confirm':
+                maximum = MAX_PDF_REVIEW_BODY
             if length > maximum:
                 return self.send_json(413, {'error': 'Request exceeds the upload or JSON size limit.'})
             if length <= 0:
@@ -358,27 +386,62 @@ class Handler(BaseHTTPRequestHandler):
                 email_body = (b'Content-Type: '+ctype.encode()+b'\r\nMIME-Version: 1.0\r\n\r\n'+body)
                 msg = BytesParser(policy=default).parsebytes(email_body)
                 parts = list(msg.iter_parts())
-                if (not msg.is_multipart() or msg.defects or len(parts) != 1
-                        or parts[0].is_multipart() or parts[0].defects
-                        or parts[0].get_content_disposition() != 'form-data'
-                        or parts[0].get_param('name', header='content-disposition') != 'file'):
-                    return self.send_json(400, {'error': 'Upload exactly one .xlsx or .csv file.'})
-                part = parts[0]
+                files = [p for p in parts if p.get_param('name', header='content-disposition') == 'file']
+                ocr_parts = [p for p in parts if p.get_param('name', header='content-disposition') == 'ocr']
+                if (not msg.is_multipart() or msg.defects or len(files) != 1
+                        or len(ocr_parts) > 1 or len(parts) != len(files) + len(ocr_parts)
+                        or any(p.is_multipart() or p.defects or p.get_content_disposition() != 'form-data' for p in parts)):
+                    return self.send_json(400, {'error': 'Upload exactly one .xlsx, .csv or .pdf file.'})
+                part = files[0]
                 filename = str(part.get_filename() or '')
-                if len(filename) > 200 or not filename.lower().endswith(('.xlsx', '.csv')):
-                    return self.send_json(400, {'error': 'Select an .xlsx or .csv file.'})
+                if len(filename) > 200 or not filename.lower().endswith(('.xlsx', '.csv', '.pdf')):
+                    return self.send_json(400, {'error': 'Select an .xlsx, .csv or .pdf file.'})
                 raw = part.get_payload(decode=True)
                 if not raw:
                     return self.send_json(400, {'error': 'File is empty.'})
                 if len(raw) > MAX_UPLOAD:
                     return self.send_json(413, {'error': 'File exceeds the 12 MiB limit.'})
+                if ocr_parts and (not filename.lower().endswith('.pdf') or ocr_parts[0].get_filename()
+                                  or ocr_parts[0].get_payload(decode=True) not in (b'true', b'false')):
+                    return self.send_json(400, {'error': 'OCR is an optional true/false field for PDF files only.'})
+                if filename.lower().endswith('.pdf'):
+                    force_ocr = bool(ocr_parts and ocr_parts[0].get_payload(decode=True) == b'true')
+                    document = preview_pdf(raw, filename, force_ocr=force_ocr)
+                    token = secrets.token_urlsafe(24)
+                    with DATA_LOCK:
+                        PENDING_IMPORTS[sid] = {'token':token, 'created':time.monotonic(), 'document':document}
+                    return self.send_json(200,{'ok':True,'review_required':True,'review_token':token,'document':document})
                 new_result = analyze(read_data(raw,filename))
                 with DATA_LOCK:
                     SESSIONS[sid]['data'] = new_result
+                    PENDING_IMPORTS.pop(sid, None)
                 return self.send_json(200,{'ok':True,'summary':new_result})
+            if path == '/api/pdf/confirm':
+                with DATA_LOCK:
+                    pending = PENDING_IMPORTS.get(sid)
+                if (not pending or payload.get('review_token') != pending['token'] or
+                        time.monotonic() - pending['created'] > PDF_REVIEW_SECONDS):
+                    return self.send_json(400,{'error':'This PDF review expired or was replaced. Upload the PDF again.'})
+                new_result = analyze(reviewed_data(payload))
+                document = pending['document']
+                new_result['import_source'] = {key:document[key] for key in ('filename','pages','used_ocr')}
+                new_result['import_source']['reviewed'] = True
+                with DATA_LOCK:
+                    if PENDING_IMPORTS.get(sid) is not pending:
+                        return self.send_json(409,{'error':'Another upload replaced this review. Upload the PDF again.'})
+                    SESSIONS[sid]['data'] = new_result
+                    PENDING_IMPORTS.pop(sid, None)
+                return self.send_json(200,{'ok':True,'summary':new_result})
+            if path == '/api/pdf/cancel':
+                with DATA_LOCK:
+                    pending = PENDING_IMPORTS.get(sid)
+                    if pending and payload.get('review_token') == pending['token']:
+                        PENDING_IMPORTS.pop(sid, None)
+                return self.send_json(200,{'ok':True})
             if path == '/api/reset':
                 with DATA_LOCK:
                     SESSIONS[sid]['data'] = DEFAULT_RESULT
+                    PENDING_IMPORTS.pop(sid, None)
                 return self.send_json(200,{'ok':True,'summary':DEFAULT_RESULT})
             with DATA_LOCK:
                 result = SESSIONS[sid]['data']

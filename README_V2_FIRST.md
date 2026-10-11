@@ -37,11 +37,13 @@ Refresh with **Cmd+Shift+R** on macOS or **Ctrl+Shift+R** on Linux.
    OPENAI_BASE_URL=https://ws.akamai-workshops.com/v1
    OPENAI_API_KEY=hk_YOUR_REAL_TEAM_KEY
    ```
-3. Save `.env`, restart FINOVA, open **Business Wrapped → Test Akamai connection**.
+3. Save `.env`, restart FINOVA, then check the backend `/api/akamai-test` endpoint. Connection testing and artwork generation controls are hidden from the client interface.
 4. `HTTP 401` means the Akamai workshop endpoint rejected your credential. Verify with hackathon staff that the key is activated and assigned to your team. Don't send the actual key in chat or commit it to Git.
 5. A key appearing in the sidebar means it was _loaded_, not that authentication succeeded. FINOVA still offers local financial analysis until the issue is resolved.
 
 ## Quick demo walkthrough
+
+Sign in on the login landing page using the emailed six-digit code before opening the workspace.
 
 1. **Overview:** Click the Electricity or Adobe alert card.
 2. **Anomaly Explorer:** Select the **Spending spikes** filter and the **Electricity / June 2026** finding. View the flagged **$1,166.39** versus typical recent **$716.43**, supporting ledger transaction(s), and the recommended review.

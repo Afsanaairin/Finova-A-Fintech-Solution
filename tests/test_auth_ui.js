@@ -51,7 +51,7 @@ const windowListeners = new Map();
 const navigation = [];
 const logoutEvents = [];
 const dialogIds = new Set([
-  'login-dialog', 'login-title', 'login-description', 'close-login-btn',
+  'login-page', 'login-title', 'login-description',
   'send-code-form', 'login-email', 'send-code-btn', 'verify-code-form',
   'login-code', 'verify-code-btn', 'login-message'
 ]);
@@ -75,6 +75,7 @@ let user = null;
 let verificationFails = false;
 let deliveryFails = false;
 let logoutFails = false;
+let sessionExpired = false;
 let delayedDashboard = null;
 let storyResetCount = 0;
 let now = 1_000_000;
@@ -93,11 +94,14 @@ const context = vm.createContext({
     addEventListener: (name, listener) => windowListeners.set(name, listener),
     FINOVAStory: {reset() { storyResetCount += 1; }},
     location: {replace(url) { navigation.push(url); }},
-    localStorage: {setItem(key, value) { logoutEvents.push({key, value}); }}
+    localStorage: {setItem(key, value) { logoutEvents.push({key, value}); }},
+    scrollTo() {}
   },
   AbortController,
   Headers,
   clearTimeout() {},
+  requestAnimationFrame() {},
+  dashboardLoads: 0,
   Date: FixtureDate,
   setTimeout() { return 1; },
   setInterval(callback) { interval = callback; return 1; },
@@ -116,7 +120,10 @@ const context = vm.createContext({
     }
     let status = 200;
     let payload;
-    if (url === '/api/auth/me') {
+    if (url === '/api/health' && sessionExpired) {
+      status = 401;
+      payload = {error: 'Log in to access your financial workspace.'};
+    } else if (url === '/api/auth/me') {
       payload = {ok: true, user};
     } else if (url === '/api/auth/send-code') {
       status = deliveryFails ? 503 : 200;
@@ -137,16 +144,18 @@ const context = vm.createContext({
   }
 });
 vm.runInContext(fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8'), context);
+vm.runInContext('boot = async () => { dashboardLoads += 1; }', context);
 
 async function run() {
-  vm.runInContext('initAuth()', context);
+  vm.runInContext('initAuth(); refreshAuth()', context);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(element('login-btn').classList.contains('hidden'), false);
+  assert.equal(element('login-page').classList.contains('hidden'), false);
+  assert.equal(element('dashboard').classList.contains('hidden'), true);
   assert.equal(element('logout-btn').classList.contains('hidden'), true);
-
-  await element('login-btn').dispatch('click');
-  assert.equal(element('login-dialog').open, true);
-  assert.equal(focusedElement, element('login-email'));
+  assert.equal(context.dashboardLoads, 0);
+  assert.equal(requests.some(request => request.url === '/api/dashboard'), false);
+  vm.runInContext("switchPage('anomalies')", context);
+  assert.equal(element('page-crumb').textContent, '');
 
   element('login-email').value = 'reader@outlook.com';
   deliveryFails = true;
@@ -167,21 +176,23 @@ async function run() {
   element('login-code').value = '123456';
   verificationFails = true;
   await element('verify-code-form').dispatch('submit');
-  assert.equal(element('login-dialog').open, true);
+  assert.equal(element('login-page').classList.contains('hidden'), false);
+  assert.equal(element('dashboard').classList.contains('hidden'), true);
   assert.equal(element('login-message').classList.contains('error'), true);
   assert.equal(element('verify-code-btn').disabled, false);
 
   verificationFails = false;
   await element('verify-code-form').dispatch('submit');
-  assert.equal(element('login-dialog').open, false);
-  assert.equal(element('login-btn').classList.contains('hidden'), true);
+  assert.equal(element('login-page').classList.contains('hidden'), true);
+  assert.equal(element('dashboard').classList.contains('hidden'), false);
+  assert.equal(context.dashboardLoads, 1);
   assert.equal(element('logout-btn').classList.contains('hidden'), false);
   assert.equal(element('user-email').textContent, 'reader@outlook.com');
   assert.equal(element('login-code').value, '');
 
   logoutFails = true;
   await element('logout-btn').dispatch('click');
-  assert.equal(element('login-btn').classList.contains('hidden'), true);
+  assert.equal(element('login-page').classList.contains('hidden'), true);
   assert.equal(element('user-email').textContent, 'reader@outlook.com');
   assert.equal(navigation.length, 0);
   assert.equal(storyResetCount, 0);
@@ -199,7 +210,8 @@ async function run() {
   await element('logout-btn').dispatch('click');
   delayedDashboard();
   await rejectedResponse;
-  assert.equal(element('login-btn').classList.contains('hidden'), false);
+  assert.equal(element('login-page').classList.contains('hidden'), false);
+  assert.equal(element('dashboard').classList.contains('hidden'), true);
   assert.equal(element('logout-btn').classList.contains('hidden'), true);
   assert.equal(element('user-email').textContent, '');
   assert.equal(element('login-email').value, '');
@@ -221,7 +233,6 @@ async function run() {
   now += 61_000;
   assert.equal(element('send-code-btn').disabled, false);
   assert.equal(interval, null);
-  await element('login-btn').dispatch('click');
   element('login-email').value = 'reader@outlook.com';
   await element('send-code-form').dispatch('submit');
   element('login-email').value = 'another@qq.com';
@@ -246,8 +257,7 @@ async function run() {
   element('login-email').value = 'reader@outlook.com';
   await element('login-email').dispatch('input');
   assert.equal(element('send-code-btn').textContent, 'Resend in 50s');
-  await element('close-login-btn').dispatch('click');
-  assert.equal(element('login-dialog').open, false);
+  assert.equal(element('dashboard').classList.contains('hidden'), true);
 
   element('user-email').textContent = 'User from another tab';
   windowListeners.get('storage')({key: 'unrelated', newValue: '1'});
@@ -263,7 +273,19 @@ async function run() {
   assert.equal(element('ai-answer').textContent, '');
   assert.equal(navigation.length, 3);
 
-  console.log('Login UI checks passed: cooldowns, verification, logout privacy, stale responses, tab reset, and history restoration.');
+  user = {email: 'reader@outlook.com'};
+  await vm.runInContext('refreshAuth()', context);
+  assert.equal(element('dashboard').classList.contains('hidden'), false);
+  assert.equal(context.dashboardLoads, 2);
+  sessionExpired = true;
+  await assert.rejects(vm.runInContext("getJSON('/api/health')", context),
+    error => error.message === 'This session has ended.');
+  assert.equal(element('dashboard').classList.contains('hidden'), true);
+  assert.equal(element('login-page').classList.contains('hidden'), false);
+  assert.equal(vm.runInContext('currentUser', context), null);
+  assert.equal(navigation.length, 4);
+
+  console.log('Login UI checks passed: gated landing, session restoration, cooldowns, verification, expiry, logout privacy, stale responses, tab reset, and history restoration.');
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });

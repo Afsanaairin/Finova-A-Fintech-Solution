@@ -17,6 +17,8 @@ from finance import analyze
 from security import FinovaHTTPServer, SecuritySettings
 from xlsx_reader import read_data
 from pdf_reader import pdf_capabilities, preview_pdf, reviewed_data
+from reports import ReportInputError, build_report
+from report_pdf import render_pdf
 
 BASE = Path(__file__).resolve().parent
 MAX_UPLOAD = 12 * 1024 * 1024
@@ -205,6 +207,7 @@ def ai_answer(question, summary):
 
 DEFAULT_DATA = read_data((BASE/'data'/'finova.xlsx').read_bytes(), 'finova.xlsx')
 DEFAULT_RESULT = analyze(DEFAULT_DATA)
+DEFAULT_RESULT['import_source'] = {'filename': 'Demo workbook: finova.xlsx', 'demo': True}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -277,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(503, {'error': 'Demo session capacity reached. Try again later.'})
                     return None
                 sid = secrets.token_urlsafe(24)
-                entry = SESSIONS[sid] = {'data': DEFAULT_RESULT, 'user': self._user, 'seen': now}
+                entry = SESSIONS[sid] = {'data': DEFAULT_RESULT, 'source': DEFAULT_DATA, 'user': self._user, 'seen': now}
             entry['seen'] = now
         self._set_cookie = sid
         with DATA_LOCK:
@@ -294,6 +297,22 @@ class Handler(BaseHTTPRequestHandler):
         except cookies.CookieError:
             return ''
         return cookie['finova_auth'].value if 'finova_auth' in cookie else ''
+
+    def _require_login(self):
+        token = self._auth_token()
+        try:
+            user = AUTH.get_user(token)
+        except Exception:
+            self.send_json(503, {'error': 'Authentication is temporarily unavailable. Please try again.'})
+            return False
+        if user is None:
+            if token:
+                self._auth_cookie('', 0)
+            self.send_json(401, {'error': 'Log in to access your financial workspace.'})
+            return False
+        # Bind financial records to both the trusted gateway and the email login.
+        self._user = (self._user, user['email'])
+        return True
 
     def _auth_cookie(self, token, max_age):
         secure = self.server.security.mode == 'proxy' or config().get('COOKIE_SECURE', 'false').lower() == 'true'
@@ -355,14 +374,20 @@ class Handler(BaseHTTPRequestHandler):
                     payload.get('email', ''), payload.get('code', ''), self._auth_token()
                 )
                 self._auth_cookie(result['token'], result['max_age'])
+                self._user = (self._user, result['user']['email'])
+                if self._session() is None:
+                    return
                 response = {'ok': True, 'user': result['user']}
             else:
                 AUTH.logout(self._auth_token())
                 self._auth_cookie('', 0)
-                # Retire uploaded data and start a fresh anonymous demo session.
-                sid = self._session()
-                if sid is None:
-                    return
+                # Retire the existing financial session without creating a new one.
+                cookie = cookies.SimpleCookie()
+                try:
+                    cookie.load(self.headers.get('Cookie', ''))
+                except cookies.CookieError:
+                    pass
+                sid = cookie['finova_demo'].value if 'finova_demo' in cookie else ''
                 with DATA_LOCK:
                     SESSIONS.pop(sid, None)
                     PENDING_IMPORTS.pop(sid, None)
@@ -382,10 +407,12 @@ class Handler(BaseHTTPRequestHandler):
             # Authentication failures must never expose email credentials or challenge values.
             return self.send_json(500, {'error': 'Authentication is temporarily unavailable. Please try again.'})
 
-    def send_bytes(self, status, body, content_type='application/json; charset=utf-8'):
+    def send_bytes(self, status, body, content_type='application/json; charset=utf-8', extra_headers=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('X-Frame-Options','DENY')
@@ -418,8 +445,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/auth/me':
-            if self._session() is None:
-                return
             token = self._auth_token()
             try:
                 user = AUTH.get_user(token)
@@ -428,6 +453,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {'ok': True, 'user': user})
             except Exception:
                 return self.send_json(503, {'error': 'Authentication is temporarily unavailable. Please try again.'})
+        if path.startswith('/api/') and not self._require_login():
+            return
         if path == '/api/health':
             return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_key_loaded':akamai_configured(), 'akamai_connected':False,
                                        'pdf_support':pdf_capabilities(),
@@ -460,9 +487,9 @@ class Handler(BaseHTTPRequestHandler):
             if data is None:
                 return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
             return self.send_json(200, data)
-        if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js','/static/pdf-upload.js'):
+        if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js','/static/pdf-upload.js','/static/reports.js','/static/login-hero.webp'):
             file = BASE/'static'/('index.html' if path=='/' else path.removeprefix('/static/'))
-            return self.send_bytes(200,file.read_bytes(),{'html':'text/html; charset=utf-8','css':'text/css; charset=utf-8','js':'text/javascript; charset=utf-8'}[file.suffix.lstrip('.')] if file.suffix!='.html' else 'text/html; charset=utf-8')
+            return self.send_bytes(200,file.read_bytes(),{'html':'text/html; charset=utf-8','css':'text/css; charset=utf-8','js':'text/javascript; charset=utf-8','webp':'image/webp'}[file.suffix.lstrip('.')] if file.suffix!='.html' else 'text/html; charset=utf-8')
         return self.send_json(404,{'error':'Not found'})
 
     def do_POST(self):
@@ -470,11 +497,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path.startswith('/api/auth/'):
-            if self._session() is None:
-                return
             return self.handle_auth_post(path)
-        if path not in ('/api/upload', '/api/pdf/confirm', '/api/pdf/cancel', '/api/reset', '/api/ask', '/api/cover'):
+        if path not in ('/api/upload', '/api/pdf/confirm', '/api/pdf/cancel', '/api/reset', '/api/ask', '/api/cover', '/api/reports/preview', '/api/reports/download'):
             return self.send_json(404, {'error': 'Unknown endpoint.'})
+        if not self._require_login():
+            return
         try:
             if self.headers.get_all('Transfer-Encoding'):
                 return self.send_json(400, {'error': 'Transfer-Encoding is not supported.'})
@@ -537,11 +564,14 @@ class Handler(BaseHTTPRequestHandler):
                             return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                         PENDING_IMPORTS[sid] = {'token':token, 'created':time.monotonic(), 'document':document}
                     return self.send_json(200,{'ok':True,'review_required':True,'review_token':token,'document':document})
-                new_result = analyze(read_data(raw,filename))
+                new_source = read_data(raw,filename)
+                new_result = analyze(new_source)
+                new_result['import_source'] = {'filename': filename}
                 with DATA_LOCK:
                     active = sid in SESSIONS
                     if active:
                         SESSIONS[sid]['data'] = new_result
+                        SESSIONS[sid]['source'] = new_source
                         PENDING_IMPORTS.pop(sid, None)
                 if not active:
                     return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
@@ -552,7 +582,8 @@ class Handler(BaseHTTPRequestHandler):
                 if (not pending or payload.get('review_token') != pending['token'] or
                         time.monotonic() - pending['created'] > PDF_REVIEW_SECONDS):
                     return self.send_json(400,{'error':'This PDF review expired or was replaced. Upload the PDF again.'})
-                new_result = analyze(reviewed_data(payload))
+                new_source = reviewed_data(payload)
+                new_result = analyze(new_source)
                 document = pending['document']
                 new_result['import_source'] = {key:document[key] for key in ('filename','pages','used_ocr')}
                 new_result['import_source']['reviewed'] = True
@@ -560,6 +591,7 @@ class Handler(BaseHTTPRequestHandler):
                     if PENDING_IMPORTS.get(sid) is not pending:
                         return self.send_json(409,{'error':'Another upload replaced this review. Upload the PDF again.'})
                     SESSIONS[sid]['data'] = new_result
+                    SESSIONS[sid]['source'] = new_source
                     PENDING_IMPORTS.pop(sid, None)
                 return self.send_json(200,{'ok':True,'summary':new_result})
             if path == '/api/pdf/cancel':
@@ -573,6 +605,7 @@ class Handler(BaseHTTPRequestHandler):
                     active = sid in SESSIONS
                     if active:
                         SESSIONS[sid]['data'] = DEFAULT_RESULT
+                        SESSIONS[sid]['source'] = DEFAULT_DATA
                         PENDING_IMPORTS.pop(sid, None)
                 if not active:
                     return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
@@ -580,8 +613,22 @@ class Handler(BaseHTTPRequestHandler):
             with DATA_LOCK:
                 entry = SESSIONS.get(sid)
                 result = entry['data'] if entry else None
+                source = entry.get('source') if entry else None
             if result is None:
                 return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
+            if path in ('/api/reports/preview', '/api/reports/download'):
+                if source is None:
+                    return self.send_json(409, {'error': 'Re-upload your records or reset the demo to enable reports in this session.'})
+                report = build_report(source, result, payload)
+                pdf = render_pdf(report) if path.endswith('/download') else None
+                with DATA_LOCK:
+                    active = SESSIONS.get(sid)
+                    if not active or active['data'] is not result:
+                        return self.send_json(409, {'error': 'The dataset changed while preparing the report. Generate it again.'})
+                if path.endswith('/preview'):
+                    return self.send_json(200, {'report': report})
+                return self.send_bytes(200, pdf, 'application/pdf',
+                                       {'Content-Disposition': f'attachment; filename="{report["filename"]}"'})
             if path == '/api/ask':
                 question = str(payload.get('question','')).strip()[:500]
                 if not question:
@@ -615,6 +662,8 @@ class Handler(BaseHTTPRequestHandler):
                 if len(result) > 3_000_000:
                     raise ValueError('Image response is too large.')
                 return self.send_json(200,{'image':'data:image/png;base64,'+result,'source':'Akamai hackathon-image'})
+        except ReportInputError as exc:
+            return self.send_json(400, {'error': str(exc)})
         except ValueError:
             # Input validators use bounded messages; parser/upstream exceptions
             # can contain echoed data, so do not send their raw text to clients.

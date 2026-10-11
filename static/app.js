@@ -1,5 +1,6 @@
 'use strict';
 let DATA = null;
+let currentUser = null;
 let selectedAnomaly = null;
 let anomalyFilter = 'all';
 let clientSessionVersion = 0;
@@ -11,6 +12,8 @@ let activeCardInfo = null;
 let pinnedCardInfo = null;
 let cardInfoCloseTimer;
 let serverHasPDF = null;
+const askRequestVersions = {overview:0,dialog:0};
+let askData = null;
 const $ = id => document.getElementById(id);
 const fmt = x => x === null || x === undefined ? 'Not provided' : '$' + Math.abs(Number(x)).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
 const signed = x => (Number(x)<0 ? '−' : '') + fmt(x);
@@ -18,8 +21,10 @@ const text = (id,value) => {$(id).textContent = String(value)};
 const friendlyMonth = iso => new Date(iso+'-01T00:00:00').toLocaleString('en-US',{month:'short',year:'numeric'});
 const escapeHTML = value => String(value??'').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 function notify(message, bad=false) { if(message===SESSION_ENDED_MESSAGE)return;const box=$('alert');box.textContent=message;box.classList.remove('hidden');box.classList.toggle('error',bad);setTimeout(()=>box.classList.add('hidden'),7000);}
-const pageInfo = {anomalies:['Anomaly Explorer','Find what changed. Understand why it matters.','Evidence-backed cost and invoice investigations.'],overview:['Overview','A clearer picture of your business.','From transactions to foresight. Understand what changed, what matters, and what comes next.'],forecast:['Forecast & Scenarios','Plan for what comes next.','Explore the cash implications of tomorrow’s decisions.'],subscriptions:['Subscriptions','Make every recurring dollar count.','Understand recurring expenses and price changes.'],transactions:['Transactions','Your money, line by line.','Transparent transaction analysis with an audit trail.'],wrapped:['Business Wrapped','Your financial story, reimagined.','FINOVA turns numbers into a meaningful business recap.']};
+const pageInfo = {anomalies:['Anomaly Explorer','Find what changed. Understand why it matters.','Evidence-backed cost and invoice investigations.'],overview:['Overview','A clearer picture of your finance.','From transactions to foresight. Understand what changed, what matters, and what comes next.'],forecast:['Forecast & Scenarios','Plan for what comes next.','Explore the cash implications of tomorrow’s decisions.'],subscriptions:['Subscriptions','Make every recurring dollar count.','Understand recurring expenses and price changes.'],transactions:['Transactions','Your money, line by line.','Transparent transaction analysis with an audit trail.'],wrapped:['Business Wrapped','Your financial story, reimagined.','FINOVA turns numbers into a meaningful business recap.']};
 function switchPage(id){
+ if(!currentUser)return;
+ if($('ask-dialog')?.open)$('ask-dialog').close();
  hideCardInfo();
  document.querySelectorAll('.page').forEach(el=>el.classList.toggle('hidden',el.id!==id));
  document.querySelectorAll('.nav-link').forEach(el=>el.classList.toggle('active',el.dataset.view===id));
@@ -28,7 +33,7 @@ function switchPage(id){
  window.scrollTo({top:0,behavior:'smooth'});
 }
 async function getJSON(url, options = {}) {
-  const {timeoutMs = 45000, timeoutMessage = 'The request timed out. Check that FINOVA is running and try again.', ...requestOptions} = options;
+  const {responseType = 'json', timeoutMs = 45000, timeoutMessage = 'The request timed out. Check that FINOVA is running and try again.', ...requestOptions} = options;
   const headers = new Headers(requestOptions.headers);
   if ((requestOptions.method || 'GET').toUpperCase() === 'POST') headers.set('X-Finova-Request', '1');
   let timedOut = false;
@@ -40,11 +45,18 @@ async function getJSON(url, options = {}) {
     const response = await fetch(url, {...requestOptions, headers, cache: 'no-store', signal: controller.signal});
     let payload;
     try {
-      payload = await response.json();
+      if(responseType==='pdf'&&response.ok){
+        if(!response.headers.get('Content-Type')?.startsWith('application/pdf'))throw new Error('Expected a PDF report.');
+        payload={blob:await response.blob(),filename:response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||'finova-report.pdf'};
+      }else payload = await response.json();
     } catch {
       throw new Error('Server returned a non-JSON response.');
     }
     if (version !== clientSessionVersion) throw new Error(SESSION_ENDED_MESSAGE);
+    if (response.status === 401 && !url.startsWith('/api/auth/')) {
+      returnToInitialState();
+      throw new Error(SESSION_ENDED_MESSAGE);
+    }
     if (!response.ok) {
       const error = new Error(payload.error || 'Request failed');
       error.status = response.status;
@@ -83,7 +95,9 @@ function getResendAvailableAt(email) {
 }
 
 function renderAuth(user) {
-  $('login-btn').classList.toggle('hidden', Boolean(user));
+  currentUser = user;
+  $('dashboard').classList.toggle('hidden', !user);
+  $('login-page').classList.toggle('hidden', Boolean(user));
   $('logout-btn').classList.toggle('hidden', !user);
   $('user-email').classList.toggle('hidden', !user);
   $('user-email').textContent = user ? user.email : '';
@@ -123,10 +137,13 @@ function startResendCooldown(email, seconds) {
 
 function returnToInitialState(broadcast = false) {
   // Discard late responses before clearing any user-specific state.
+  renderAuth(null);
   clientSessionVersion += 1;
   pendingRequests.forEach(controller => controller.abort());
   pendingRequests.clear();
   DATA = null;
+  resetAskState();
+  askData = null;
   selectedAnomaly = null;
   anomalyFilter = 'all';
   loginEmail = '';
@@ -136,10 +153,10 @@ function returnToInitialState(broadcast = false) {
   resendTimer = null;
   hideCardInfo();
   window.FINOVAPdf?.clear();
+  window.FINOVAReports?.reset();
   window.FINOVAStory.reset();
   const layout = document.querySelector('.layout');
   if (layout && initialLayoutHTML !== null) layout.innerHTML = initialLayoutHTML;
-  $('login-dialog').close();
   $('login-email').value = '';
   $('login-code').value = '';
   $('verify-code-form').classList.add('hidden');
@@ -158,11 +175,18 @@ function returnToInitialState(broadcast = false) {
 }
 
 async function refreshAuth() {
+  authBusy = true;
+  updateAuthControls();
   try {
     const result = await getJSON('/api/auth/me');
     renderAuth(result.user);
+    loginMessage('');
+    if (result.user) await boot();
   } catch (error) {
-    notify(error.message, true);
+    if(error.message!==SESSION_ENDED_MESSAGE)loginMessage(error.message, true);
+  } finally {
+    authBusy = false;
+    updateAuthControls();
   }
 }
 
@@ -176,13 +200,6 @@ function initAuth() {
   window.addEventListener('pageshow', event => {
     if (event.persisted) returnToInitialState();
   });
-  const dialog = $('login-dialog');
-  $('login-btn').addEventListener('click', () => {
-    updateAuthControls();
-    dialog.showModal();
-    (loginEmail ? $('login-code') : $('login-email')).focus();
-  });
-  $('close-login-btn').addEventListener('click', () => dialog.close());
   $('login-email').addEventListener('input', () => {
     if ($('login-email').value.trim() !== loginEmail) {
       loginEmail = '';
@@ -215,7 +232,7 @@ function initAuth() {
     } finally {
       authBusy = false;
       updateAuthControls();
-      if (loginEmail && dialog.open) $('login-code').focus();
+      if (loginEmail && !currentUser) $('login-code').focus();
     }
   });
   $('verify-code-form').addEventListener('submit', async event => {
@@ -230,7 +247,9 @@ function initAuth() {
         body: JSON.stringify({email: loginEmail, code: $('login-code').value.trim()})
       });
       renderAuth(result.user);
-      dialog.close();
+      await boot();
+      if(!currentUser)return;
+      switchPage('overview');
       $('login-code').value = '';
       $('verify-code-form').classList.add('hidden');
       loginEmail = '';
@@ -257,7 +276,6 @@ function initAuth() {
       button.disabled = false;
     }
   });
-  refreshAuth();
 }
 function lineChart(host,rows, includeForecast=false){
  const el=$(host);if(!rows.length){el.textContent='Not enough data for this chart.';return;}
@@ -273,6 +291,10 @@ function lineChart(host,rows, includeForecast=false){
 }
 function drawCharts(){if(!DATA)return;lineChart('cash-chart',DATA.monthly.slice(-12));lineChart('forecast-chart',DATA.forecast.length?[...DATA.monthly.slice(-6),...DATA.forecast]:[],true)}
 function render(){if(!DATA)return;
+ const filename=DATA.import_source?.demo?'':(DATA.import_source?.filename||'');
+ text('loaded-file',filename);
+ $('loaded-file').classList.toggle('hidden',!filename);
+ if(askData!==DATA){resetAskState();askData=DATA;}
  document.querySelectorAll('.financial-card').forEach(card=>toggleCardBreakdown(card,false));
  const d=DATA,t=d.totals,invoiceOnly=d.analysis_kind==='invoices'; text('company-title',d.company);text('report-date',invoiceOnly?`${d.invoice_count} customer invoices · evaluated as of ${d.as_of}`:`${d.reporting_period} · ${d.transaction_count.toLocaleString()} transactions · ${d.months_count} months`);
  $('invoice-overview').classList.toggle('hidden',!invoiceOnly);
@@ -304,7 +326,7 @@ function render(){if(!DATA)return;
  text('sub-count',d.has_subscription_data?d.subscriptions.length:'Not provided');text('sub-monthly',fmt(d.has_subscription_data?t.subscription_monthly:null));text('sub-annual',fmt(d.has_subscription_data?t.subscription_annual:null));
  $('subscription-list').innerHTML=d.subscriptions.map(s=>`<div class="subscription-row"><div class="service-icon">${escapeHTML((s.name||'?').slice(0,1))}</div><div class="service-name">${escapeHTML(s.name)}<small>Recurring monthly · Usage not known</small></div><div class="service-amount">${fmt(s.monthly_cost)}<small>per month</small></div><div class="review-tag ${s.price_increase===0?'ok':''}">${s.price_increase>0?`↑ ${fmt(s.price_increase)} price rise`:'No price change detected'}</div></div>`).join('')||'<div class="callout">No subscription sheet present in this upload.</div>';
  if(d.wrapped){text('wrap-income',fmt(d.wrapped.cash_in));text('wrap-expense',fmt(d.wrapped.cash_out));text('wrap-month',friendlyMonth(d.wrapped.biggest_expense_month));text('wrap-category',d.wrapped.largest_category);text('wrap-subs',fmt(d.has_subscription_data?d.wrapped.subscription_annual:null));}
- renderTransactions();updateScenario();window.FINOVAStory.setData(d.wrapped?d:null);requestAnimationFrame(drawCharts);
+ renderTransactions();updateScenario();window.FINOVAStory.setData(d.wrapped?d:null);window.FINOVAReports?.setData(d);requestAnimationFrame(drawCharts);
 }
 function openAnomaly(id){
   selectedAnomaly=id;
@@ -320,6 +342,7 @@ function renderAnomalies(){
   text('spike-count',DATA.analysis_kind==='invoices'?'Not provided':all.filter(a=>a.type==='Spending spike').length);
  text('price-count',DATA.has_subscription_data?all.filter(a=>a.type==='Subscription increase').length:'Not provided');
  text('overdue-count',DATA.has_invoice_data?DATA.totals.overdue_invoices:'Not provided');
+  text('anomaly-group-note',DATA.has_invoice_data?`${DATA.totals.overdue_invoices} overdue invoice(s) are grouped into ${all.filter(a=>a.type==='Overdue invoices').length} flagged pattern(s). Patterns and individual invoice counts are different totals.`:'Patterns count only the checks supported by the uploaded records.');
   renderFinancialCards();
   const visible=all.filter(a=>anomalyFilter==='all'||a.type===anomalyFilter);
   if(!visible.some(a=>a.id===selectedAnomaly))selectedAnomaly=visible.length?visible[0].id:null;
@@ -439,64 +462,126 @@ function initFinancialCards(){
 function renderAnomalyDetail(a){
   const el=$('anomaly-detail');
   if(!a){el.innerHTML='<p>Choose a financial signal to inspect its evidence.</p>';return;}
-  const pct=(a.increase_pct!==null&&a.increase_pct!==undefined)?`<span class="detail-badge">+${escapeHTML(a.increase_pct)}% vs baseline</span>`:'';
-  const baseline=a.baseline!==null&&a.baseline!==undefined?`<div><small>Comparison baseline</small><strong>${fmt(a.baseline)}</strong></div>`:'';
-  const stats=`<div class="anomaly-stats"><div><small>Flagged amount</small><strong>${fmt(a.amount)}</strong></div>${baseline}<div><small>Period</small><strong>${escapeHTML(a.month)}</strong></div></div>`;
+  const info=a.investigation;
+  if(!info){el.innerHTML='<p>Restart FINOVA and reload the page to load the updated investigations and reports.</p>';return;}
+  const precise=value=>Number(value).toLocaleString('en-US',{style:'currency',currency:'USD'});
+  const stats=`<div class="anomaly-stats">${info.metrics.map(m=>`<div><small>${escapeHTML(m.label)}</small><strong>${escapeHTML(precise(m.value))}</strong></div>`).join('')}</div>`;
   const transactions=(a.evidence||[]).length?`<h4>Supporting transactions <span>(${a.evidence_count||a.evidence.length} matching records; showing up to ${a.evidence.length})</span></h4>
-    <div class="table-scroll"><table class="evidence-table"><thead><tr><th>Date</th><th>Counterparty / description</th><th class="right">Amount</th></tr></thead><tbody>${a.evidence.map(t=>`<tr><td>${escapeHTML(t.date)}</td><td>${escapeHTML(t.vendor)}<small>${escapeHTML(t.description)}</small></td><td class="right">${fmt(t.amount)}</td></tr>`).join('')}</tbody></table></div>`:'';
-  const invoices=(a.invoices||[]).length?`<h4>Overdue customer invoices <span>(at reporting date)</span></h4><div class="table-scroll"><table class="evidence-table"><thead><tr><th>Customer / invoice</th><th>Due</th><th class="right">Outstanding</th></tr></thead><tbody>${a.invoices.map(i=>`<tr><td>${escapeHTML(i.customer)}<small>${escapeHTML(i.invoice)}</small></td><td>${escapeHTML(i.due)}<small>${i.overdue_days} days late</small></td><td class="right">${fmt(i.amount)}</td></tr>`).join('')}</tbody></table></div>`:'';
-  const hist=a.history?.length?`<h4>Recorded monthly amounts</h4><div class="anomaly-history">${a.history.map(h=>`<div><small>${escapeHTML(h.month)}</small><strong>${fmt(h.amount)}</strong><i style="width:${Math.max(3,Math.min(100,100*h.amount/Math.max(1,...a.history.map(z=>z.amount))))}%"></i></div>`).join('')}</div>`:'';
-  el.innerHTML=`<div class="anomaly-detail-heading"><span class="eyebrow">${escapeHTML(a.type)} · ${escapeHTML(a.category)}</span><h3>${escapeHTML(a.message)}</h3>${pct}</div>
-    ${stats}<h4>How FINOVA flagged it</h4><p>${escapeHTML(a.method||'FINOVA compared historical records.')}</p>
-    ${hist}${transactions}${invoices}<div class="anomaly-action"><strong>Recommended next step</strong><p>${escapeHTML(a.action||'Review the original source records.')}</p></div>
-    <button id="explain-anomaly" type="button" class="button button-primary">✦ Ask FINOVA about this</button>`;
+    <div class="table-scroll"><table class="evidence-table"><thead><tr><th>Date</th><th>Counterparty / description</th><th class="right">Amount</th></tr></thead><tbody>${a.evidence.map(t=>`<tr><td>${escapeHTML(t.date)}</td><td>${escapeHTML(t.vendor)}<small>${escapeHTML(t.description)}</small></td><td class="right">${precise(t.amount)}</td></tr>`).join('')}</tbody></table></div>`:'';
+  const invoices=(a.invoices||[]).length?`<h4>Overdue customer invoices <span>(at reporting date)</span></h4><div class="table-scroll"><table class="evidence-table"><thead><tr><th>Customer / invoice</th><th>Due</th><th class="right">Outstanding</th></tr></thead><tbody>${a.invoices.map(i=>`<tr><td>${escapeHTML(i.customer)}<small>${escapeHTML(i.invoice)}</small></td><td>${escapeHTML(i.due)}<small>${i.overdue_days} days late</small></td><td class="right">${precise(i.amount)}</td></tr>`).join('')}</tbody></table></div>`:'';
+  const hist=a.history?.length?`<h4>Recorded monthly amounts</h4><div class="anomaly-history">${a.history.map(h=>`<div><small>${escapeHTML(h.month)}</small><strong>${precise(h.amount)}</strong><i style="width:${Math.max(3,Math.min(100,100*h.amount/Math.max(1,...a.history.map(z=>z.amount))))}%"></i></div>`).join('')}</div>`:'';
+  el.innerHTML=`<div class="anomaly-detail-heading"><span class="eyebrow">FINOVA RISK INVESTIGATION</span><h3>${escapeHTML(info.title)}</h3><span class="pill amber">${escapeHTML(info.status)}</span></div>
+    ${stats}<div class="investigation-questions">${info.questions.map((q,index)=>`<article class="investigation-question investigation-question-${index}"><span class="investigation-label">${escapeHTML(q.label)}</span><h4>${index+1}. ${escapeHTML(q.question)}</h4><p>${escapeHTML(q.text)}</p></article>`).join('')}</div>
+    <details class="investigation-evidence"><summary>Supporting records and historical amounts</summary>${hist}${transactions}${invoices}</details>
+    <p class="investigation-source">Source: ${escapeHTML(info.source)} · Reporting date: ${escapeHTML(info.as_of)}<br>${DATA.import_source?.demo?'Illustrative investigation · Demo workbook':escapeHTML(info.note)}</p>
+    <div class="investigation-actions"><button id="download-investigation" type="button" class="button button-primary">↓ Download report (PDF)</button><button id="explain-anomaly" type="button" class="button button-muted">✦ Ask FINOVA about this</button></div>`;
+  $('download-investigation').addEventListener('click',()=>window.FINOVAReports?.downloadAnomaly(a.id,$('download-investigation')));
   $('explain-anomaly').addEventListener('click',()=>{
-    switchPage('overview');
     const q=`Explain the ${a.type.toLowerCase()} for ${a.category} in ${a.month} and what we should check.`;
-    $('question').value=q;ask(q);
-    $('ai-answer').scrollIntoView({behavior:'smooth',block:'center'});
+    openAskDialog('anomalies',q,true);
   });
 }
 function renderTransactions(){if(!DATA)return;const q=$('transaction-search').value.trim().toLowerCase();const trs=DATA.recent_transactions.filter(t=>[t.description,t.category,t.vendor,t.date].some(x=>String(x).toLowerCase().includes(q)));
  $('transaction-table').innerHTML=trs.map(t=>`<tr><td>${escapeHTML(t.date)}</td><td><strong>${escapeHTML(t.description)}</strong></td><td>${escapeHTML(t.category)}</td><td>${escapeHTML(t.type)}</td><td class="right ${t.signed<0?'negative':'positive'}">${signed(t.signed)}</td></tr>`).join('')||'<tr><td colspan="5">No matching transactions found.</td></tr>';
 }
 function updateScenario(){if(!DATA)return;let r=Number($('rev-slider').value),e=Number($('exp-slider').value);text('rev-label',`${r>0?'+':''}${r}%`);text('exp-label',`${e>0?'+':''}${e}%`);let f=DATA.forecast[0];['rev-slider','exp-slider'].forEach(id=>$(id).disabled=!f);text('scenario-net',f?signed(f.cash_in*(1+r/100)-f.cash_out*(1+e/100)):'Not available')}
-async function boot(){try { const status=await getJSON('/api/health');serverHasPDF=Boolean(status.pdf_support);window.FINOVAPdf?.setCapabilities(status.pdf_support);text('pdf-support-note',!serverHasPDF?'Restart the FINOVA server and reload this page to enable PDF uploads.':!window.FINOVAPdf?'Reload this page to load the PDF upload interface.':status.pdf_support.text?'PDF extraction is available on this server.':'PDF extraction needs server setup; CSV and Excel are ready.');text('ai-connection',status.akamai_key_loaded?'Akamai key loaded (verify connection)':'Offline financial analysis ready');text('akamai-status',status.akamai_key_loaded?'Akamai team key loaded. Click Test Akamai connection to verify live access.':'Offline mode: configure your Akamai team key in finova/.env to generate AI artwork. The animated video works without a key.');DATA=await getJSON('/api/dashboard');if(DATA.import_source)text('loaded-file',DATA.import_source.filename);render();} catch(e){notify(e.message,true)}}
-function applyImport(summary,filename){DATA=summary;window.FINOVAStory.resetArt();text('loaded-file',filename);render();switchPage('overview');notify(DATA.analysis_kind==='invoices'?`Analyzed ${DATA.invoice_count} reviewed customer invoices.`:`Analyzed ${DATA.transaction_count.toLocaleString()} financial transactions successfully.`)}
+async function boot(){try { const status=await getJSON('/api/health');serverHasPDF=Boolean(status.pdf_support);window.FINOVAPdf?.setCapabilities(status.pdf_support);text('pdf-support-note',!serverHasPDF?'Restart the FINOVA server and reload this page to enable PDF uploads.':!window.FINOVAPdf?'Reload this page to load the PDF upload interface.':status.pdf_support.text?'PDF extraction is available on this server.':'PDF extraction needs server setup; CSV and Excel are ready.');text('ai-connection',status.akamai_key_loaded?'Akamai key loaded (verify connection)':'Offline financial analysis ready');DATA=await getJSON('/api/dashboard');render();} catch(e){notify(e.message,true)}}
+function applyImport(summary){DATA=summary;window.FINOVAStory.resetArt();render();switchPage('overview');notify(DATA.analysis_kind==='invoices'?`Analyzed ${DATA.invoice_count} reviewed customer invoices.`:`Analyzed ${DATA.transaction_count.toLocaleString()} financial transactions successfully.`)}
 async function uploadFile(file,forceOCR=false){if(!file)return;if(!/\.(csv|xlsx|pdf)$/i.test(file.name)){notify('Choose a .xlsx, .csv or .pdf file.',true);return}if(file.size>12*1024*1024){notify('File too large for this demo.',true);return}
  const isPDF=/\.pdf$/i.test(file.name);let progressTimer;
  $('upload-error')?.classList.add('hidden');
  try{
   if(isPDF&&(serverHasPDF===false||!window.FINOVAPdf))throw new Error('PDF uploads need the updated FINOVA server. Stop the server with Ctrl+C, run python3 run.py again, then reload this page.');
   $('loading').style.display='block';text('loading',isPDF?'Extracting PDF records for review…':'Reading your financial records…');
-  window.FINOVAPdf?.setBusy(true);$('file-input').disabled=true;$('reset-btn').disabled=true;
+  window.FINOVAPdf?.setBusy(true);$('file-input').disabled=true;
   if(isPDF){const started=Date.now();progressTimer=setInterval(()=>{const elapsed=Math.floor((Date.now()-started)/1000);text('loading',`Extracting PDF records for review… ${elapsed}s elapsed. Scanned pages can take longer.`)},1000);}
   const fd=new FormData();fd.append('file',file);if(forceOCR)fd.append('ocr','true');
   const response=await getJSON('/api/upload',{method:'POST',body:fd,timeoutMs:isPDF?75000:45000,timeoutMessage:isPDF?'PDF extraction timed out. Restart FINOVA and try a smaller PDF.':'Upload timed out. Check that FINOVA is running and try again.'});
   if(response.review_required){window.FINOVAPdf.show(response,file);notify('PDF extracted. Check the records and confirm before analysis.')}
   else{window.FINOVAPdf?.clear();applyImport(response.summary,file.name)}
  }catch(e){if($('upload-error')){text('upload-error',e.message);$('upload-error').classList.remove('hidden')}notify(e.message,true)}
- finally{clearInterval(progressTimer);$('loading').style.display='none';$('file-input').value='';window.FINOVAPdf?.setBusy(false);$('file-input').disabled=false;$('reset-btn').disabled=false;}
+ finally{clearInterval(progressTimer);$('loading').style.display='none';$('file-input').value='';window.FINOVAPdf?.setBusy(false);$('file-input').disabled=false;}
 }
-async function ask(question){
- const output=$('ai-answer');output.textContent='FINOVA is analyzing the figures…';
+function askElements(surface){
+ const dialog=surface==='dialog';
+ return {output:$(dialog?'ask-dialog-answer':'ai-answer'),mode:$(dialog?'ask-dialog-mode':'ai-mode'),
+   source:$(dialog?'ask-dialog-source':'ai-source'),input:$(dialog?'ask-dialog-question':'question'),
+   submit:$(dialog?'ask-dialog-submit':'ask-submit')};
+}
+function resetAskSurface(surface){
+ askRequestVersions[surface]++;
+ const ui=askElements(surface);
+ ui.input.value='';ui.submit.disabled=false;ui.output.ariaBusy='false';
+ ui.output.textContent='Your financial intelligence assistant is ready.';
+ ui.source.textContent='Answers use the uploaded data, not invented transactions.';
+ ui.mode.textContent='FINOVA can answer using verified local calculations.';ui.mode.classList.remove('is-local');
+}
+function resetAskState(){
+ resetAskSurface('overview');resetAskSurface('dialog');
+ if($('ask-dialog').open)$('ask-dialog').close();
+}
+function openAskDialog(view,prompt='',autoAsk=false){
+ const suggestions={
+   anomalies:[['Explain this finding',''],['Review spending changes','Why are our expenses changing?'],['Review overdue invoices','Which customer invoices are overdue?']],
+   forecast:[['Upcoming cash risks','What are our biggest upcoming cash-flow risks?'],['Next month outlook','What does the forecast show for next month?'],['Invoice collections','Which customer invoices are overdue?']],
+   subscriptions:[['Review subscriptions','What subscriptions should we review?'],['Price increases','Which subscriptions have price increases?'],['Recurring costs','What are our monthly subscription costs?']],
+   transactions:[['Expense changes','Why are our expenses changing?'],['Spending categories','Which spending categories changed the most?'],['Cash movements','What are our latest cash receipts and payments?']]
+ };
+ if(!suggestions[view]||!DATA)return;
+ resetAskSurface('dialog');
+ const finding=view==='anomalies'?DATA.anomalies.find(a=>a.id===selectedAnomaly):null;
+ const findingPrompt=finding?`Explain the ${finding.type.toLowerCase()} for ${finding.category} in ${finding.month} and what we should check.`:'What unusual financial patterns should we review?';
+ $('ask-dialog-context').textContent=finding?`${pageInfo[view][0]} · ${finding.category} · ${friendlyMonth(finding.month)}`:pageInfo[view][0];
+ $('ask-dialog-description').textContent=finding?'Ask about this finding, its evidence and what to check next. Possible causes require verification.':'Ask about the records on this page. Answers use verified FINOVA figures.';
+ $('ask-dialog-suggestions').innerHTML=suggestions[view].map(([label,question])=>`<button type="button" data-dialog-prompt="${escapeHTML(question||findingPrompt)}">${escapeHTML(label)}</button>`).join('');
+ $('ask-dialog-question').value=prompt;
+ const dialog=$('ask-dialog');
+ if(!dialog.open){
+   const opener=document.activeElement;
+   dialog.show();
+   opener?.focus({preventScroll:true});
+ }
+ if(autoAsk&&prompt)ask(prompt,'dialog');
+}
+function initAskDialog(){
+ const dialog=$('ask-dialog');
+ document.querySelectorAll('[data-ask-view]').forEach(button=>button.addEventListener('click',()=>openAskDialog(button.dataset.askView)));
+ $('close-ask-dialog').addEventListener('click',()=>dialog.close());
+ dialog.addEventListener('close',()=>{if(!dialog.open)askRequestVersions.dialog++;});
+ document.addEventListener('keydown',event=>{
+   if(event.key==='Escape'&&dialog.open&&!event.defaultPrevented)dialog.close();
+ });
+ $('ask-dialog-form').addEventListener('submit',event=>{event.preventDefault();ask($('ask-dialog-question').value,'dialog')});
+ $('ask-dialog-suggestions').addEventListener('click',event=>{
+   const button=event.target.closest('[data-dialog-prompt]');
+   if(button){$('ask-dialog-question').value=button.dataset.dialogPrompt;ask(button.dataset.dialogPrompt,'dialog');}
+ });
+}
+async function ask(question,surface='overview'){
+ question=String(question).trim().slice(0,500);if(!question||!DATA)return;
+ const ui=askElements(surface),version=++askRequestVersions[surface],sourceData=DATA,session=clientSessionVersion;
+ const current=()=>version===askRequestVersions[surface]&&sourceData===DATA&&session===clientSessionVersion;
+ ui.output.textContent='FINOVA is analyzing the figures…';ui.output.ariaBusy='true';ui.submit.disabled=true;ui.source.textContent='';
  try{
   const res=await getJSON('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question})});
-  output.textContent=res.answer;text('ai-source',res.source);
-  const mode=$('ai-mode');
+  if(!current())return;
+  ui.output.textContent=res.answer;ui.source.textContent=res.source;
+  const mode=ui.mode;
   if(res.mode==='local'){
     mode.textContent=(res.warning?`Akamai unavailable: ${res.warning} `:'')+'Showing evidence-based local analysis.';
     mode.classList.add('is-local');text('ai-connection','FINOVA local analysis active');
   } else {mode.textContent='Akamai AI connected · Answer grounded in verified FINOVA calculations.';mode.classList.remove('is-local');text('ai-connection','Akamai AI connected');}
- }catch(e){output.textContent='FINOVA could not answer: '+e.message;}
+ }catch(e){if(current())ui.output.textContent='FINOVA could not answer: '+e.message;}
+ finally{if(current()){ui.output.ariaBusy='false';ui.submit.disabled=false;}}
 }
 window.addEventListener('DOMContentLoaded',()=>{
  initAuth();
  initFinancialCards();
+ initAskDialog();
  document.querySelectorAll('.nav-link').forEach(b=>b.addEventListener('click',()=>switchPage(b.dataset.view)));
  $('file-input').addEventListener('change',e=>uploadFile(e.target.files[0]));
  window.FINOVAPdf?.init({getJSON,notify,reupload:uploadFile,onImport:applyImport});
- $('reset-btn').addEventListener('click',async()=>{try{const res=await getJSON('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});window.FINOVAPdf?.clear();$('upload-error')?.classList.add('hidden');DATA=res.summary;text('loaded-file','Demo workbook: finova.xlsx');window.FINOVAStory.resetArt();render();switchPage('overview');notify('Demo workbook restored.')}catch(e){notify(e.message,true)}});
+ window.FINOVAReports?.init({getJSON,notify});
  $('transaction-search').addEventListener('input',renderTransactions);
  $('view-all-anomalies').addEventListener('click',()=>openAnomaly(null));
  document.querySelectorAll('.anomaly-filter').forEach(b=>b.addEventListener('click',()=>{
@@ -504,22 +589,8 @@ window.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('.anomaly-filter').forEach(x=>x.classList.toggle('active',x===b));renderAnomalies();
  }));
  ['rev-slider','exp-slider'].forEach(id=>$(id).addEventListener('input',updateScenario));
- document.querySelectorAll('[data-prompt]').forEach(b=>b.addEventListener('click',()=>{$('question').value=b.dataset.prompt;ask(b.dataset.prompt)}));
+ document.querySelectorAll('#overview [data-prompt]').forEach(b=>b.addEventListener('click',()=>{$('question').value=b.dataset.prompt;ask(b.dataset.prompt)}));
  $('ask-form').addEventListener('submit',e=>{e.preventDefault();let q=$('question').value.trim();if(q)ask(q)});
  window.FINOVAStory.init();
- $('akamai-test').addEventListener('click',async()=>{
-   const btn=$('akamai-test');btn.disabled=true;text('akamai-status','Testing your live Akamai workshop access…');
-   try{const res=await getJSON('/api/akamai-test');text('akamai-status',res.message);$('akamai-status').classList.remove('is-error');text('ai-connection','Akamai API access verified');text('ai-mode','Akamai API verified. Ask FINOVA to generate an AI explanation.');}
-   catch(e){text('akamai-status',e.message);$('akamai-status').classList.add('is-error')}
-   finally{btn.disabled=false}
- });
- $('cover-btn').addEventListener('click',async()=>{
-   const btn=$('cover-btn');btn.disabled=true;btn.textContent='Generating Akamai art…';
-   text('akamai-status','Requesting artwork from Akamai. This can take a little time.');
-   try{const res=await getJSON('/api/cover',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',timeoutMs:120000});
-     window.FINOVAStory.setArt(res.image);text('akamai-status','Akamai artwork received and added to the story. Play or export it now!');$('akamai-status').classList.remove('is-error');
-   }catch(e){text('akamai-status',e.message+' · Your FINOVA Wrapped animation still works without this image.');$('akamai-status').classList.add('is-error')}
-   finally{btn.disabled=false;btn.textContent='✦ Generate Akamai artwork'}
- });
- boot();
+ refreshAuth();
 });

@@ -7,7 +7,36 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-<div class="layout">
+<main id="login-page" class="login-page">
+  <section class="login-intro" aria-labelledby="login-welcome-title">
+    <img class="login-photo" src="/static/login-hero.webp" alt="" aria-hidden="true" fetchpriority="high" decoding="async">
+    <div class="brand"><div class="brand-mark">✦</div><div><strong>FINOVA</strong><small>FINANCE INNOVATION</small></div></div>
+    <div class="login-intro-copy">
+      <div class="eyebrow">FINANCIAL INTELLIGENCE FOR YOUR BUSINESS</div>
+      <h1 id="login-welcome-title">A clearer picture of your finance.</h1>
+      <p>Turn the records you have into clear insights. Explore spending, investigate unusual patterns, and plan your next move.</p>
+      <a class="login-start" href="#login-email">Access your workspace <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+  <section class="login-panel" aria-labelledby="login-title" aria-describedby="login-description">
+    <span class="eyebrow">WELCOME TO FINOVA</span>
+    <h2 id="login-title">Log in to your workspace</h2>
+    <p id="login-description">Enter your email to receive a one-time login code. No password needed.</p>
+    <form id="send-code-form" class="login-form">
+      <label for="login-email">Email address</label>
+      <input id="login-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" maxlength="254" required>
+      <button id="send-code-btn" class="button button-primary" type="submit" disabled>Send login code</button>
+    </form>
+    <form id="verify-code-form" class="login-form hidden">
+      <label for="login-code">6-digit code</label>
+      <input id="login-code" name="code" class="login-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="000000" required>
+      <button id="verify-code-btn" class="button button-primary" type="submit">Log in</button>
+    </form>
+    <p id="login-message" class="login-message" role="status" aria-live="polite">Checking your session…</p>
+    <noscript><p>Enable JavaScript to log in to FINOVA.</p></noscript>
+  </section>
+</main>
+<div id="dashboard" class="layout hidden">
   <aside class="sidebar">
     <div class="brand"><div class="brand-mark">✦</div><div><strong>FINOVA</strong><small>FINANCE INNOVATION</small></div></div>
     <div class="nav-caption">WORKSPACE</div>
@@ -23,11 +52,11 @@
     <div class="sidebar-bottom"><div class="mini-indicator"><span class="dot"></span><span id="ai-connection">Offline analysis ready</span></div><p>Akamai-compatible financial intelligence</p></div>
   </aside>
   <main class="main">
-    <header class="topbar"><div class="breadcrumbs">WORKSPACE <span>/</span> <strong id="page-crumb">Overview</strong></div><div class="top-actions"><span id="user-email" class="user-email hidden"></span><button id="login-btn" class="button button-primary" type="button">Log in</button><button id="logout-btn" class="button button-muted hidden" type="button">Log out</button></div></header>
+    <header class="topbar"><div class="breadcrumbs">WORKSPACE <span>/</span> <strong id="page-crumb">Overview</strong></div><div class="top-actions"><span id="user-email" class="user-email hidden"></span><button id="logout-btn" class="button button-muted hidden" type="button">Log out</button></div></header>
     <div class="content">
-      <div class="hero"><div><div class="eyebrow">THE FUTURE OF FINANCIAL CLARITY</div><h1 id="page-title">A clearer picture of your business.</h1><p id="page-subtitle">From transactions to foresight. Understand what changed, what matters, and what comes next.</p></div><div class="hero-art" aria-hidden="true"><div class="hero-circle c1"></div><div class="hero-circle c2"></div><div class="hero-circle c3"></div><div class="hero-spark">✦</div></div></div>
+      <div class="hero"><div><div class="eyebrow">THE FUTURE OF FINANCIAL CLARITY</div><h1 id="page-title">A clearer picture of your finance.</h1><p id="page-subtitle">From transactions to foresight. Understand what changed, what matters, and what comes next.</p></div><div class="hero-art" aria-hidden="true"><div class="hero-circle c1"></div><div class="hero-circle c2"></div><div class="hero-circle c3"></div><div class="hero-spark">✦</div></div></div>
       <div id="alert" class="notice hidden" role="status"></div>
-      <section class="upload-strip"><div class="upload-icon">⇧</div><div class="upload-copy"><strong id="loaded-file">Demo workbook: finova.xlsx</strong><span>Start with the records you have: CSV, Excel, or a PDF bank statement or customer invoice. PDF records are reviewed before analysis.</span><span id="pdf-support-note"></span></div><label class="button button-primary" for="file-input">Upload financial data<input type="file" id="file-input" accept=".xlsx,.csv,.pdf" hidden></label><button id="reset-btn" class="button button-muted">Reset demo</button></section>
+      <section class="upload-strip"><div class="upload-icon">⇧</div><div class="upload-copy"><strong id="loaded-file" class="hidden"></strong><span>Start with the records you have: CSV, Excel, or a PDF bank statement or customer invoice. PDF records are reviewed before analysis.</span><span id="pdf-support-note"></span></div><label class="button button-primary" for="file-input">Upload financial data<input type="file" id="file-input" accept=".xlsx,.csv,.pdf" hidden></label></section>
       <div id="upload-error" class="notice error hidden" role="alert"></div>
       <div id="loading" class="loading" role="status" aria-live="polite">Reading your financial records…</div>
       <section id="pdf-review" class="panel pdf-review hidden" aria-labelledby="pdf-review-title">
@@ -63,16 +92,17 @@
         </div>
         <div id="revenue-note" class="revenue-note">Invoiced revenue last month: <strong id="billed-revenue">—</strong> <span>Revenue billed to customers is not the same as cash collected.</span></div>
         <div id="cash-panels" class="two-col"><article class="panel wide"><div class="panel-heading"><div><h3>Money moving through your business</h3><p>Monthly cash receipts vs. outgoing payments</p></div><span class="legend"><i class="teal"></i> In <i class="purple"></i> Out</span></div><div id="cash-chart" class="chart-host"></div></article><article class="panel"><div class="panel-heading"><div><h3>Top spending areas</h3><p>All uploaded history</p></div></div><div id="category-bars" class="bars"></div></article></div>
-        <div class="two-col"><article class="panel"><div class="panel-heading"><div><h3>What deserves attention?</h3><p>Automatically detected financial patterns</p></div><span class="pill subtle">FINOVA intelligence</span></div><div id="insight-list" class="insight-list"></div><button type="button" class="button button-muted insight-all" id="view-all-anomalies">Explore all anomalies →</button></article><article class="panel ask-panel"><div class="panel-heading"><div><h3>Ask FINOVA anything</h3><p>Grounded answers from verified figures</p></div><span class="ask-spark">✳</span></div><div class="suggestions"><button data-prompt="Why are our expenses changing?">Why have expenses changed?</button><button data-prompt="What subscriptions should we review?">Review subscriptions</button><button data-prompt="What are our biggest upcoming financial risks?">Upcoming risks</button></div><form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label><input id="question" maxlength="500" placeholder="Ask about expenses, invoices, next month…" required><button type="submit" aria-label="Ask FINOVA">➜</button></form><div id="ai-mode" class="ai-mode">FINOVA can answer using verified local calculations.</div><div id="ai-answer" class="ai-answer"><span>✦</span> Your financial intelligence assistant is ready.</div><small id="ai-source">Answers use the uploaded data, not invented transactions.</small></article></div>
+        <div class="two-col"><article class="panel"><div class="panel-heading"><div><h3>What deserves attention?</h3><p>Automatically detected financial patterns</p></div><span class="pill subtle">FINOVA intelligence</span></div><div id="insight-list" class="insight-list"></div><button type="button" class="button button-muted insight-all" id="view-all-anomalies">Explore all anomalies →</button></article><article class="panel ask-panel"><div class="panel-heading"><div><h3>Ask FINOVA anything</h3><p>Grounded answers from verified figures</p></div><span class="ask-spark">✳</span></div><div class="suggestions"><button data-prompt="Why are our expenses changing?">Why have expenses changed?</button><button data-prompt="What subscriptions should we review?">Review subscriptions</button><button data-prompt="What are our biggest upcoming financial risks?">Upcoming risks</button></div><form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label><input id="question" maxlength="500" placeholder="Ask about expenses, invoices, next month…" required><button id="ask-submit" type="submit" aria-label="Ask FINOVA">➜</button></form><div id="ai-mode" class="ai-mode">FINOVA can answer using verified local calculations.</div><div id="ai-answer" class="ai-answer"><span>✦</span> Your financial intelligence assistant is ready.</div><small id="ai-source">Answers use the uploaded data, not invented transactions.</small></article></div>
       </div>
       <div id="anomalies" class="page hidden">
-        <div class="section-heading"><div><span class="eyebrow">FINOVA · FINANCIAL RISK INTELLIGENCE</span><h2>Anomaly Explorer</h2><p>Every flag has a calculation, supporting records and a practical next step. These are signals to review, not proof of fraud.</p></div><span class="pill amber">Rule-based detection</span></div>
+        <div class="section-heading"><div><span class="eyebrow">FINOVA · FINANCIAL RISK INTELLIGENCE</span><h2>Anomaly Explorer</h2><p>Every flag has a calculation, supporting records and a practical next step. These are signals to review, not proof of fraud.</p></div><div class="section-actions"><span class="pill amber">Rule-based detection</span><button type="button" class="button button-primary" data-ask-view="anomalies">✦ Ask FINOVA</button></div></div>
         <div class="metrics-grid anomaly-summary-grid financial-cards-grid">
           <article class="metric-card financial-card" data-card="patterns"><span>Patterns flagged</span><strong id="anomaly-count">—</strong><small id="patterns-context">Across the uploaded reporting period</small></article>
           <article class="metric-card financial-card" data-card="spikes"><span>Expense spending spikes</span><strong id="spike-count">—</strong><small id="spikes-context">Above typical recent amounts</small></article>
           <article class="metric-card financial-card" data-card="subscriptions"><span>Subscription changes</span><strong id="price-count">—</strong><small id="subscriptions-context">Recorded price increases</small></article>
           <article class="metric-card financial-card" data-card="overdue"><span>Overdue invoices</span><strong id="overdue-count">—</strong><small id="overdue-context">As of the data reporting date</small></article>
         </div>
+        <p id="anomaly-group-note" class="anomaly-group-note">Overdue customer invoices can be grouped into one flagged pattern.</p>
         <div class="anomaly-workspace">
           <article class="panel anomaly-list-panel"><div class="panel-heading"><div><h3>Financial signals</h3><p>Choose a flag to investigate</p></div></div>
             <div class="anomaly-filters" id="anomaly-filters" role="group" aria-label="Filter anomalies">
@@ -86,57 +116,52 @@
         </div>
         <div class="callout">FINOVA uses verified workbook records, not claims about why a purchase happened. Flags are deterministic threshold checks; they are not trained ML predictions, fraud accusations, or accounting audit opinions.</div>
       </div>
-      <div id="forecast" class="page hidden"><div class="section-heading"><div><span class="eyebrow">LOOK AHEAD</span><h2>Forecast & scenario studio</h2><p>Conservative projections from historical cash receipts and payments</p></div><span class="pill amber">Estimate, not a guarantee</span></div><div class="revenue-note" id="sales-forecast-strip">Next month estimated billed revenue: <strong id="predicted-sales">—</strong><span>Projected invoiced sales; separate from expected cash receipts.</span></div><div class="metrics-grid"><div class="metric-card"><span>Next month expected cash in</span><strong id="future-in">—</strong><small>Estimated receipts</small></div><div class="metric-card"><span>Next month expected cash out</span><strong id="future-out">—</strong><small>Estimated outgoing payments</small></div><div class="metric-card"><span>Next month projected net</span><strong id="future-net">—</strong><small>Before scenario adjustments</small></div><div class="metric-card"><span>Outstanding customer invoices</span><strong id="future-ar">—</strong><small>Collection timing uncertain</small></div></div><div class="two-col"><article class="panel wide"><div class="panel-heading"><div><h3>Cash-flow outlook</h3><p>Historical cash flows and next three projected months</p></div></div><div id="forecast-chart" class="chart-host"></div><div class="callout">Forecast method: 70% recent 3-month average + 30% same month last year (if available). Illustrative ±20% receipts and ±15% expenses bands. Not a fitted ML model.</div></article><article class="panel"><div class="panel-heading"><div><h3>What-if simulator</h3><p>Test hypothetical changes to next month's cash flow</p></div></div><div class="slider-line"><span>Revenue collection adjustment</span><b id="rev-label">0%</b></div><input id="rev-slider" type="range" min="-30" max="30" step="5" value="0"><div class="slider-line"><span>Expense adjustment</span><b id="exp-label">0%</b></div><input id="exp-slider" type="range" min="-25" max="35" step="5" value="0"><div class="scenario-result"><span>Simulated net cash movement</span><strong id="scenario-net">—</strong><p>Scenario only. This does not modify historical data.</p></div></article></div><article class="panel"><div class="panel-heading"><div><h3>Outstanding and overdue invoices</h3><p>As of the workbook's last reporting month, not today's date</p></div></div><div id="invoice-list" class="invoice-list"></div></article></div>
-      <div id="subscriptions" class="page hidden"><div class="section-heading"><div><span class="eyebrow">COST OPTIMIZATION</span><h2>Subscription intelligence</h2><p>Find recurring costs and price increases. Usage cannot be inferred from charges alone.</p></div></div><div class="metrics-grid small-grid"><div class="metric-card"><span>Subscriptions tracked</span><strong id="sub-count">—</strong></div><div class="metric-card"><span>Monthly recurring cost</span><strong id="sub-monthly">—</strong></div><div class="metric-card"><span>Annualized run rate</span><strong id="sub-annual">—</strong></div></div><article class="panel"><div class="panel-heading"><div><h3>Your recurring tools & services</h3><p>Review price changes before deciding what to keep</p></div></div><div id="subscription-list"></div><div class="callout">FINOVA does not cancel subscriptions automatically, and bank transactions cannot establish whether a service was used.</div></article></div>
-      <div id="transactions" class="page hidden"><div class="section-heading"><div><span class="eyebrow">AUDIT TRAIL</span><h2>Transaction explorer</h2><p>Recent ledger transactions, preserving cash inflows and outflows.</p></div><label class="search-wrap">⌕ <input id="transaction-search" placeholder="Search transactions" aria-label="Search transactions"></label></div><article class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Type</th><th class="right">Cash amount</th></tr></thead><tbody id="transaction-table"></tbody></table></div><p class="table-footer">Showing up to 100 latest transactions. Backend analysis uses all valid rows.</p></article></div>
+      <div id="forecast" class="page hidden"><div class="section-heading"><div><span class="eyebrow">LOOK AHEAD</span><h2>Forecast & scenario studio</h2><p>Conservative projections from historical cash receipts and payments</p></div><div class="section-actions"><span class="pill amber">Estimate, not a guarantee</span><button type="button" class="button button-primary" data-ask-view="forecast">✦ Ask FINOVA</button></div></div><div class="revenue-note" id="sales-forecast-strip">Next month estimated billed revenue: <strong id="predicted-sales">—</strong><span>Projected invoiced sales; separate from expected cash receipts.</span></div><div class="metrics-grid"><div class="metric-card"><span>Next month expected cash in</span><strong id="future-in">—</strong><small>Estimated receipts</small></div><div class="metric-card"><span>Next month expected cash out</span><strong id="future-out">—</strong><small>Estimated outgoing payments</small></div><div class="metric-card"><span>Next month projected net</span><strong id="future-net">—</strong><small>Before scenario adjustments</small></div><div class="metric-card"><span>Outstanding customer invoices</span><strong id="future-ar">—</strong><small>Collection timing uncertain</small></div></div><div class="two-col"><article class="panel wide"><div class="panel-heading"><div><h3>Cash-flow outlook</h3><p>Historical cash flows and next three projected months</p></div></div><div id="forecast-chart" class="chart-host"></div><div class="callout">Forecast method: 70% recent 3-month average + 30% same month last year (if available). Illustrative ±20% receipts and ±15% expenses bands. Not a fitted ML model.</div></article><article class="panel"><div class="panel-heading"><div><h3>What-if simulator</h3><p>Test hypothetical changes to next month's cash flow</p></div></div><div class="slider-line"><span>Revenue collection adjustment</span><b id="rev-label">0%</b></div><input id="rev-slider" type="range" min="-30" max="30" step="5" value="0"><div class="slider-line"><span>Expense adjustment</span><b id="exp-label">0%</b></div><input id="exp-slider" type="range" min="-25" max="35" step="5" value="0"><div class="scenario-result"><span>Simulated net cash movement</span><strong id="scenario-net">—</strong><p>Scenario only. This does not modify historical data.</p></div></article></div><article class="panel"><div class="panel-heading"><div><h3>Outstanding and overdue invoices</h3><p>As of the workbook's last reporting month, not today's date</p></div></div><div id="invoice-list" class="invoice-list"></div></article></div>
+      <div id="subscriptions" class="page hidden"><div class="section-heading"><div><span class="eyebrow">COST OPTIMIZATION</span><h2>Subscription intelligence</h2><p>Find recurring costs and price increases. Usage cannot be inferred from charges alone.</p></div><button type="button" class="button button-primary" data-ask-view="subscriptions">✦ Ask FINOVA</button></div><div class="metrics-grid small-grid"><div class="metric-card"><span>Subscriptions tracked</span><strong id="sub-count">—</strong></div><div class="metric-card"><span>Monthly recurring cost</span><strong id="sub-monthly">—</strong></div><div class="metric-card"><span>Annualized run rate</span><strong id="sub-annual">—</strong></div></div><article class="panel"><div class="panel-heading"><div><h3>Your recurring tools & services</h3><p>Review price changes before deciding what to keep</p></div></div><div id="subscription-list"></div><div class="callout">FINOVA does not cancel subscriptions automatically, and bank transactions cannot establish whether a service was used.</div></article></div>
+      <div id="transactions" class="page hidden"><div class="section-heading"><div><span class="eyebrow">AUDIT TRAIL</span><h2>Transaction explorer</h2><p>Recent ledger transactions, preserving cash inflows and outflows.</p></div><div class="section-actions"><label class="search-wrap">⌕ <input id="transaction-search" placeholder="Search transactions" aria-label="Search transactions"></label><button type="button" class="button button-primary" data-ask-view="transactions">✦ Ask FINOVA</button></div></div><article class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Type</th><th class="right">Cash amount</th></tr></thead><tbody id="transaction-table"></tbody></table></div><p class="table-footer">Showing up to 100 latest transactions. Backend analysis uses all valid rows.</p></article></div>
       <div id="wrapped" class="page hidden">
         <div class="section-heading"><div><span class="eyebrow">YOUR BUSINESS HAS A STORY</span><h2>FINOVA Wrapped · Story Studio</h2><p>An animated, data-driven financial story you can play and export as a video.</p></div></div>
         <div class="story-workspace">
           <div class="story-top">
-            <div><span class="story-kicker">✦ FINOVA ORIGINAL</span><h3>Make your financial year unforgettable.</h3><p>8 animated scenes. Verified figures. Motion graphics. Optional Akamai-generated artwork.</p></div>
+            <div><span class="story-kicker">✦ FINOVA ORIGINAL</span><h3>Make your financial year unforgettable.</h3><p>8 animated scenes. Verified figures. Your business story.</p></div>
             <span class="story-video-pill">30 SEC RECAP</span>
           </div>
           <div class="story-stage"><canvas id="story-canvas" width="720" height="1280" aria-label="FINOVA financial story video preview">Canvas preview requires a modern web browser.</canvas></div>
           <div class="story-controls">
-            <button id="story-play" class="button button-primary">▶ Play Wrapped</button>
-            <button id="story-export" class="button button-primary">↧ Export video</button>
+            <button id="story-play" type="button" class="button button-primary">▶ Play Wrapped</button>
+            <button id="story-export" type="button" class="button button-primary">↧ Export video</button>
             <label class="story-setting">Format<select id="story-format"><option value="portrait">9:16 · Social story</option><option value="landscape">16:9 · Judge demo</option></select></label>
             <label class="story-sound"><input type="checkbox" id="story-sound" checked> Original soundtrack</label>
           </div>
           <progress id="story-progress" max="100" value="0" aria-label="Wrapped story playback progress"></progress>
           <p id="story-status" class="story-status" role="status">Loading financial story…</p>
         </div>
-        <article class="panel story-ai-panel">
-          <div><span class="eyebrow">POWERED BY AKAMAI · OPTIONAL ART</span><h3>Generate a new AI cover</h3><p>Akamai's <code>hackathon-image</code> creates decorative artwork for the opening and closing scene. FINOVA handles the animation and factual financial numbers itself.</p><p id="akamai-status" class="akamai-status">Checking your Akamai configuration…</p></div>
-          <div class="story-ai-actions"><button id="akamai-test" class="button button-secondary">Test Akamai connection</button><button id="cover-btn" class="button button-primary">✦ Generate Akamai artwork</button></div>
-        </article>
         <div class="section-heading"><div><span class="eyebrow">VERIFIED FIGURES</span><h2>Your financial highlights</h2><p>The underlying numbers behind the story remain auditable.</p></div></div>
         <div class="wrapped-cards story-stats"><div><span>Cash received · last 12 months</span><strong id="wrap-income">—</strong></div><div><span>Cash paid · last 12 months</span><strong id="wrap-expense">—</strong></div><div><span>Biggest spending month</span><strong id="wrap-month">—</strong></div><div><span>Largest expense category · all history</span><strong id="wrap-category">—</strong></div><div><span>Software subscriptions · annualized</span><strong id="wrap-subs">—</strong></div></div>
-        <div class="callout">FINOVA uses calculations from your workbook. The generated image is illustration only. Cash receipts are not necessarily billed revenue, and future figures are estimates. The video is rendered locally by your browser; Akamai currently provides image generation and explanations, not a video-generation model.</div>
+        <div class="callout">The video uses calculations from your uploaded records. Cash receipts are not necessarily billed revenue, and future figures are estimates. Review the financial highlights above for the underlying figures.</div>
       </div>
       <footer>FINOVA · Finance Innovation <span>Made for Hack Midwest 2026 · Demo data only</span></footer>
     </div>
   </main>
 </div>
-<dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title" aria-describedby="login-description">
-  <div class="login-heading">
-    <div><span class="eyebrow">WELCOME TO FINOVA</span><h2 id="login-title">Log in</h2></div>
-    <button id="close-login-btn" class="login-close" type="button" aria-label="Close login dialog">&times;</button>
+<dialog id="ask-dialog" class="ask-dialog" aria-modal="false" aria-labelledby="ask-dialog-title" aria-describedby="ask-dialog-description">
+  <div class="ask-dialog-heading">
+    <div><span class="eyebrow" id="ask-dialog-context">FINOVA ASSISTANT</span><h2 id="ask-dialog-title">Ask FINOVA anything</h2></div>
+    <button id="close-ask-dialog" class="ask-dialog-close" type="button" aria-label="Close Ask FINOVA dialog">&times;</button>
   </div>
-  <p id="login-description">Enter your email to receive a one-time login code. No password needed.</p>
-  <form id="send-code-form" class="login-form">
-    <label for="login-email">Email address</label>
-    <input id="login-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" maxlength="254" required>
-    <button id="send-code-btn" class="button button-primary" type="submit">Send login code</button>
+  <p id="ask-dialog-description">Ask about the records on this page. Answers use verified FINOVA figures.</p>
+  <div id="ask-dialog-suggestions" class="suggestions"></div>
+  <form id="ask-dialog-form" class="ask-form">
+    <label class="sr-only" for="ask-dialog-question">Your question for FINOVA</label>
+    <input id="ask-dialog-question" maxlength="500" placeholder="Ask FINOVA about this page…" required>
+    <button id="ask-dialog-submit" type="submit" aria-label="Send question to FINOVA">➜</button>
   </form>
-  <form id="verify-code-form" class="login-form hidden">
-    <label for="login-code">6-digit code</label>
-    <input id="login-code" name="code" class="login-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="000000" required>
-    <button id="verify-code-btn" class="button button-primary" type="submit">Log in</button>
-  </form>
-  <p id="login-message" class="login-message" role="status" aria-live="polite"></p>
+  <div id="ask-dialog-mode" class="ai-mode">FINOVA can answer using verified local calculations.</div>
+  <div id="ask-dialog-answer" class="ai-answer" role="status" aria-live="polite" aria-atomic="true">Your financial intelligence assistant is ready.</div>
+  <small id="ask-dialog-source" class="ask-source">Answers use the uploaded data, not invented transactions.</small>
 </dialog>
 <script src="/static/wrapped.js" defer></script>
 <script src="/static/pdf-upload.js" defer></script>
+<script src="/static/reports.js" defer></script>
 <script src="/static/app.js" defer></script>
 </body></html>

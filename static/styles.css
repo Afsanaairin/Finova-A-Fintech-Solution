@@ -28,18 +28,8 @@
 #story-progress::-moz-progress-bar{background:#8af1cf;border-radius:10px}
 .story-status{color:#abd6df;text-align:center;min-height:28px;margin-top:9px;font-size:11px}
 .story-status.story-error{color:#ffd5bc}
-.story-ai-panel{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:30px}
-.story-ai-panel h3{margin:8px 0;font-size:18px;color:#122646}
-.story-ai-panel p{font-size:12px;line-height:1.6;color:#7a8a9b;max-width:660px}
-.story-ai-panel code{background:#e9f4f2;color:#156857;border-radius:4px;padding:1px 4px}
-.story-ai-panel .akamai-status{color:#375c78;font-weight:650;margin-top:9px}
-.story-ai-panel .akamai-status.is-error{color:#a34e43}
-.story-ai-actions{display:flex;flex-direction:column;gap:9px;min-width:215px}
-.story-ai-actions button{white-space:nowrap}
-.story-ai-actions button:disabled{opacity:.6}
 .story-stats{margin-top:16px}
-@media(max-width:900px){.story-ai-panel{flex-direction:column;align-items:stretch}.story-ai-actions{flex-direction:row;flex-wrap:wrap}.story-ai-actions button{flex:1}}
-@media(max-width:600px){.story-workspace{padding:17px}.story-top{display:block}.story-video-pill{display:inline-block;margin-top:13px}.story-stage{padding-top:16px;max-height:68vh}.story-controls .button{flex:1}.story-setting{width:100%;justify-content:center}.story-ai-actions{flex-direction:column}}
+@media(max-width:600px){.story-workspace{padding:17px}.story-top{display:block}.story-video-pill{display:inline-block;margin-top:13px}.story-stage{padding-top:16px;max-height:68vh}.story-controls .button{flex:1}.story-setting{width:100%;justify-content:center}}
 
 /* V3: traceable financial anomaly investigations and resilient AI mode. */
 .insight-link{width:100%;text-align:left;cursor:pointer;font-family:inherit;border:1px solid #e5ebf3;background:#fff;display:flex;gap:12px}
@@ -48,6 +38,25 @@
 .insight-all{margin-top:14px;width:100%;background:#ecf8f5!important;color:#087969!important}
 .ai-mode{font-size:11px;font-weight:650;color:#097b6e;background:#ebfaf5;border:1px solid #d0f1e8;border-radius:9px;padding:10px 13px;margin:11px 0 2px;line-height:1.6}
 .ai-mode.is-local{background:#fff6e8;color:#805c27;border-color:#f2e4cc}
+.section-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px}
+.ask-dialog{position:fixed;inset:auto 20px 20px auto;margin:0;z-index:30;width:min(390px,calc(100vw - 32px));max-height:min(520px,calc(100dvh - 40px));overflow-y:auto;border:1px solid var(--line);border-radius:15px;padding:18px;color:var(--ink);background:linear-gradient(160deg,#fff,#fcfaff);box-shadow:0 8px 30px #101c3729;overscroll-behavior:contain}
+.ask-dialog[open]{display:flex;flex-direction:column}
+.ask-dialog>*{flex-shrink:0}
+.ask-dialog-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.ask-dialog-heading>div{min-width:0}
+.ask-dialog-heading .eyebrow{display:block;font-size:9px;letter-spacing:1px;line-height:1.6;overflow-wrap:anywhere}
+.ask-dialog-heading h2{margin:6px 0 0;font-size:18px;letter-spacing:-.3px}
+.ask-dialog-close{display:grid;place-items:center;flex:none;width:30px;height:30px;border:0;border-radius:8px;background:#f1f4f9;color:#43526a;font-size:22px}
+.ask-dialog-close:hover{background:#e5eaf3}
+.ask-dialog>p{font-size:11px;color:#697b8d;line-height:1.6;margin:0 0 12px}
+.ask-dialog .suggestions{gap:6px;margin-bottom:12px}
+.ask-dialog .suggestions button{padding:7px 9px}
+.ask-dialog .ai-answer{flex-shrink:1;min-height:72px;max-height:180px;overflow-y:auto;overscroll-behavior:contain;overflow-wrap:anywhere}
+.ask-dialog .ai-mode{font-size:10px;padding:8px 10px}
+.ask-source{font-size:10px;color:#929faf;display:block;margin-top:9px;line-height:1.6}
+.ask-dialog-close:focus-visible,.ask-dialog .suggestions button:focus-visible,.ask-form button:focus-visible,.section-actions button:focus-visible{outline:2px solid #17a994;outline-offset:3px}
+.ask-form:focus-within{outline:2px solid #17a994;outline-offset:2px}
+@media(max-width:600px){.ask-dialog{right:12px;bottom:12px;width:min(390px,calc(100vw - 24px));max-height:min(480px,calc(75dvh - 24px));padding:15px}.section-actions{justify-content:flex-start;max-width:100%}.section-actions .search-wrap{max-width:100%}}
 .anomaly-workspace{display:grid;grid-template-columns:minmax(275px,.82fr) minmax(0,1.4fr);gap:17px;align-items:start}
 .anomaly-list-panel,.anomaly-detail-panel{min-height:400px}
 .anomaly-filters{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 13px}
@@ -72,24 +81,46 @@
 .anomaly-history strong{color:#172b4b}.anomaly-history i{height:9px;border-radius:8px;background:linear-gradient(90deg,#10b7a4,#758bde)}
 .evidence-table{font-size:10px}.evidence-table th,.evidence-table td{padding:10px 8px}.evidence-table td small{display:block;color:#7c899c;font-size:9px;margin-top:4px}
 .anomaly-action{background:#e9f8f4;border:1px solid #cbede4;border-radius:12px;padding:14px;margin:20px 0 15px}.anomaly-action strong{color:#146e61}.anomaly-action p{margin-top:5px}
+.anomaly-group-note{font-size:11px;color:#677b90;line-height:1.6;margin:0 0 18px}
+.investigation-questions{display:grid;gap:13px;margin:22px 0}
+.investigation-question{padding:15px;border:1px solid #e1eaf0;border-left:3px solid #5795b3;border-radius:10px;background:#fafcfe}
+.investigation-question-3{border-left-color:#cd9a42;background:#fffcf5}
+.investigation-question-4{border-left-color:#0f9e86;background:#f1fbf7}
+.investigation-label{display:block;font-size:9px;font-weight:750;letter-spacing:.6px;color:#427386;margin-bottom:7px}
+.investigation-question h4{margin:0 0 8px;font-size:13px}
+.investigation-question p{font-size:12px;line-height:1.75;color:#52677c}
+.investigation-evidence{border:1px solid #e3eaf1;border-radius:10px;padding:13px;margin:17px 0}
+.investigation-evidence summary{cursor:pointer;color:#203555;font-weight:700;line-height:1.5}
+.investigation-source{font-size:10px!important;line-height:1.7;margin:16px 0!important}
+.investigation-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}
+.anomaly-stats strong{overflow-wrap:anywhere}
+.investigation-evidence summary:focus-visible{outline:2px solid #17a994;outline-offset:2px}
+@media(max-width:600px){.investigation-actions .button{width:100%;white-space:normal}}
 @media(max-width:1100px){.anomaly-workspace{grid-template-columns:1fr}}
 
 .user-email{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#43526a}
-.login-dialog{width:min(420px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow-y:auto;border:1px solid var(--line);border-radius:18px;padding:28px;color:var(--ink);background:#fff;box-shadow:0 24px 80px #101c3740}
-.login-dialog::backdrop{background:#101c3766}
-.login-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
-.login-heading h2{margin:7px 0 0;font-size:26px;letter-spacing:-.6px}
-.login-close{display:grid;place-items:center;flex:none;width:34px;height:34px;border:0;border-radius:9px;background:#f1f4f9;color:#43526a;font-size:24px}
-.login-close:hover{background:#e5eaf3}
-.login-dialog>p{font-size:13px;color:#697b8d;line-height:1.6}
+.login-page{min-height:100dvh;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);align-items:center;background:#f5f7fb}
+.login-intro{position:relative;isolation:isolate;align-self:stretch;overflow:hidden;min-width:0;min-height:640px;display:flex;flex-direction:column;color:white;background:#102537;padding:clamp(35px,5vw,88px)}
+.login-photo{position:absolute;inset:0;z-index:-2;width:100%;height:100%;object-fit:cover;object-position:22% center;pointer-events:none}
+.login-intro::before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(135deg,rgba(9,26,38,.94),rgba(9,26,38,.36)),linear-gradient(0deg,rgba(7,27,40,.2),transparent 45%);pointer-events:none}
+.login-intro .brand{padding:0;flex-shrink:0}.login-intro .brand small{color:#c7d9e4}
+.login-intro-copy{max-width:560px;flex:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding:70px 0 100px}
+.login-intro-copy>.eyebrow{color:#8ce9d8;line-height:1.8}
+.login-intro h1{max-width:510px;font-size:clamp(36px,4vw,58px);letter-spacing:-1.5px;line-height:1.12;margin:18px 0 24px;text-wrap:balance}
+.login-intro-copy>p{max-width:440px;font-size:17px;line-height:1.8;color:#e0e9ed;margin:0}
+.login-start{display:inline-flex;align-items:center;gap:18px;margin-top:32px;padding:13px 18px;border:1px solid #8ce9d877;border-radius:8px;background:#163d47a6;color:#e0fff8;font-size:12px;font-weight:700;text-decoration:none}
+.login-start:hover{background:#1b505b}.login-start:focus-visible{outline:3px solid #8ce9d8;outline-offset:4px}.login-start span{font-size:18px}
+.login-panel{width:min(440px,calc(100% - 64px));justify-self:center;padding:36px;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 18px 60px #101c3712;margin:32px 0}
+.login-panel h2{margin:10px 0 12px;font-size:27px;letter-spacing:-.7px;line-height:1.2}
+.login-panel>p{font-size:13px;color:#697b8d;line-height:1.6}
 .login-form{display:grid;gap:10px;margin-top:20px}
 .login-form label{font-size:12px;font-weight:700;color:#344565}
 .login-form input{width:100%;min-width:0;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink)}
-.login-form input:focus-visible,.login-close:focus-visible,.top-actions button:focus-visible{outline:3px solid #1db7a2;outline-offset:3px}
+.login-form input:focus-visible,.login-form button:focus-visible,.top-actions button:focus-visible{outline:3px solid #1db7a2;outline-offset:3px}
 .login-form .login-code{letter-spacing:6px;font-size:20px;text-align:center}
-.login-dialog .login-message{min-height:21px;margin-bottom:0;color:#159b89;font-size:12px}
-.login-dialog .login-message.error{color:#9b3131}
-@media(max-width:760px){.top-actions{gap:8px}.user-email{max-width:100px}.top-actions .button{padding:8px 10px}.login-dialog{padding:22px}.breadcrumbs{letter-spacing:.5px;font-size:10px}.breadcrumbs span{padding:0 6px}}
+.login-panel .login-message{min-height:21px;margin-bottom:0;color:#159b89;font-size:12px}
+.login-panel .login-message.error{color:#9b3131}
+@media(max-width:760px){.top-actions{gap:8px}.user-email{max-width:100px}.top-actions .button{padding:8px 10px}.login-page{grid-template-columns:1fr;align-content:start}.login-intro{min-height:460px;padding:28px}.login-intro-copy{padding:44px 0 10px}.login-intro h1{font-size:32px;margin:14px 0 18px}.login-intro-copy>p{font-size:14px}.login-start{margin-top:24px}.login-photo{object-position:22% center}.login-panel{width:calc(100% - 32px);max-width:440px;padding:25px;margin:24px 0}.breadcrumbs{letter-spacing:.5px;font-size:10px}.breadcrumbs span{padding:0 6px}}
 /* Financial cards: a brief explanation and a separate expandable breakdown. */
 .anomaly-summary-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 .financial-cards-grid{align-items:start}

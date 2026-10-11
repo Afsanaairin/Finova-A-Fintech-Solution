@@ -72,7 +72,6 @@ function setBusy(value) {
   $('pdf-review-form').querySelectorAll('button').forEach(button => {button.disabled = value;});
   $('pdf-retry-ocr').disabled = value || !ocrAvailable;
   $('file-input').disabled = value;
-  $('reset-btn').disabled = value;
 }
 function clear() {
   draft = null; file = null;

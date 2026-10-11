@@ -10,9 +10,9 @@ const palette = [
   ['#0a223d','#136f7f','#c2ffed'], ['#141b3b','#44329b','#d5c3ff']
 ];
 const seconds = 3.8;
-let data=null, art=null, playing=false, recording=false, raf=0, startTime=0;
-let recorder=null, chunks=[], audioCtx=null, audioDestination=null, downloadURL=null;
-let captureStream=null, playbackGeneration=0, artworkGeneration=0;
+let data=null, art=null, playing=false, paused=false, recording=false, raf=0, startTime=0, elapsed=0;
+let recorder=null, chunks=[], previewMusic=null, exportMusic=null, downloadURL=null;
+let captureStream=null, exportRaf=0, exportElapsed=0, playbackGeneration=0, exportGeneration=0, artworkGeneration=0;
 const canvas=$('story-canvas'), ctx=canvas.getContext('2d',{alpha:false});
 let size='portrait';
 const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
@@ -22,12 +22,13 @@ const money=v=>'$'+Math.round(Math.abs(n(v))).toLocaleString('en-US');
 const signMoney=v=>(n(v)<0?'−':'')+money(v);
 const shortMonth=v=>{try{return new Date(v+'-01T00:00:00').toLocaleString('en-US',{month:'long',year:'numeric'})}catch{return String(v||'')}};
 const line=(s,len=38)=>String(s||'').length>len?String(s).slice(0,len-1)+'…':String(s||'');
-function dimensions(){const portrait=size==='portrait'; canvas.width=portrait?720:1280;canvas.height=portrait?1280:720;canvas.style.aspectRatio=portrait?'9 / 16':'16 / 9';}
+function dimensions(target=canvas,format=size){const portrait=format==='portrait'; target.width=portrait?720:1280;target.height=portrait?1280:720;target.style.aspectRatio=portrait?'9 / 16':'16 / 9';}
+function alphaFor(t){return Math.min(1,clamp(t/.4),clamp((seconds-t)/.35));}
+function draw(t,target=canvas,source=data,artwork=art){
+ const canvas=target,ctx=target.getContext('2d',{alpha:false}),data=source,art=artwork;
 function R(x,y,w,h,r=24){ctx.beginPath();ctx.roundRect(x,y,w,h,r)}
 function text(str,x,y,font,color='#fff',align='left',alpha=1){ctx.save();ctx.globalAlpha*=alpha;ctx.font=font;ctx.textAlign=align;ctx.fillStyle=color;ctx.fillText(String(str),x,y);ctx.restore()}
 function wrap(str,maxWidth,font,maxLines=3){ctx.font=font;const words=String(str).split(/\s+/);const lines=[];let curr='';for(const word of words){const next=(curr?curr+' ':'')+word;if(ctx.measureText(next).width>maxWidth&&curr){lines.push(curr);curr=word}else curr=next;}if(curr)lines.push(curr);return lines.slice(0,maxLines)}
-function alphaFor(t){return Math.min(1,clamp(t/.4),clamp((seconds-t)/.35));}
-function draw(t){
  if(!data)return;
  const scene=Math.min(7,Math.floor(t/seconds));const local=Math.max(0,t-scene*seconds);
  const W=canvas.width,H=canvas.height,P=W<H;
@@ -147,12 +148,16 @@ function draw(t){
 function setStatus(s,isError=false){const target=$('story-status');target.textContent=s;target.classList.toggle('story-error',isError)}
 function stopTracks(stream){if(stream)stream.getTracks().forEach(track=>track.stop())}
 function stopCapture(){stopTracks(captureStream);captureStream=null}
-function stopAudio(){stopTracks(audioDestination?.stream);if(audioCtx){audioCtx.close().catch(()=>{});audioCtx=null}audioDestination=null}
-function makeMusic(){
+function stopAudio(music){
+ if(!music)return;
+ stopTracks(music.stream);music.context?.close().catch(()=>{});
+}
+function makeMusic(audible=true){
  if(!$('story-sound').checked)return null;
+ let audioCtx=null,audioDestination=null;
  try{
   audioCtx=new (window.AudioContext||window.webkitAudioContext)();audioDestination=audioCtx.createMediaStreamDestination();
-  const master=audioCtx.createGain();master.gain.value=4.0;master.connect(audioCtx.destination);master.connect(audioDestination);
+  const master=audioCtx.createGain();master.gain.value=.21;if(audible)master.connect(audioCtx.destination);master.connect(audioDestination);
   const now=audioCtx.currentTime+.08;
   const notes=[196,247,294,392,330,294,247,220,196,247,330,440,392,330,294,247];
   const total=seconds*8;
@@ -167,76 +172,134 @@ function makeMusic(){
     bass.connect(bEnv);bEnv.connect(master);bass.start(when);bass.stop(when+.24);
    }
   }
-  return audioDestination.stream;
- }catch(e){stopAudio();return null}
+  return {context:audioCtx,stream:audioDestination.stream};
+ }catch(e){stopAudio({context:audioCtx,stream:audioDestination?.stream});return null}
 }
-function finalPlayback(){playing=false;recording=false;$('story-play').disabled=false;$('story-export').disabled=false;$('story-play').textContent='▶ Play again';$('story-format').disabled=false;stopCapture();stopAudio();}
-function renderLoop(now,generation){
- if(generation!==playbackGeneration||!playing||!data)return;
- const elapsed=(now-startTime)/1000,total=seconds*8;
- draw(Math.min(total-.001,elapsed));$('story-progress').value=Math.min(100,elapsed/total*100);
- if(elapsed<total&&playing){raf=requestAnimationFrame(time=>renderLoop(time,generation))}else{
-  playing=false;cancelAnimationFrame(raf);
-  if(recording&&recorder?.state==='recording')recorder.stop();else finalPlayback();
- }
+function updateControls(){
+ $('story-play').disabled=false;
+ $('story-play').textContent=playing?'⏸ Pause':paused?'▶ Resume':elapsed>=seconds*8?'▶ Play again':'▶ Play Wrapped';
+ $('story-export').disabled=recording;
+ $('story-export').textContent=recording?'Exporting video…':'↧ Export video';
+ $('story-format').disabled=playing||paused||recording;
+ $('story-sound').disabled=playing||paused||recording;
 }
-async function play(exportVideo=false){
- if(!data||playing)return;
- const generation=++playbackGeneration;
- if(downloadURL){URL.revokeObjectURL(downloadURL);downloadURL=null}
- size=$('story-format').value;dimensions();playing=true;recording=exportVideo;
- $('story-play').disabled=true;$('story-export').disabled=true;$('story-format').disabled=true;
- setStatus(exportVideo?'Recording FINOVA Wrapped in real time. Keep this tab visible…':'Now playing FINOVA Wrapped!');
- startTime=performance.now();
- let music=makeMusic();
- if(exportVideo){
-   if(typeof MediaRecorder==='undefined'||!canvas.captureStream){recording=false;playing=false;stopAudio();setStatus('Video recording is not supported by this browser. Use Chrome or Edge, or enjoy the animated story.',true);finalPlayback();$('story-format').disabled=false;return}
-   const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'].find(s=>MediaRecorder.isTypeSupported(s));
-   if(!mime){recording=false;playing=false;stopAudio();setStatus('No compatible browser video recording format. Try current Chrome or Edge.',true);finalPlayback();$('story-format').disabled=false;return}
-   try{
-     const combined=canvas.captureStream(30);captureStream=combined;
-     if(music)music.getAudioTracks().forEach(track=>combined.addTrack(track));
-     chunks=[];recorder=new MediaRecorder(combined,{mimeType:mime,videoBitsPerSecond:4000000});
-     const activeRecorder=recorder;
-     activeRecorder.ondataavailable=e=>{if(generation===playbackGeneration&&recorder===activeRecorder&&e.data.size)chunks.push(e.data)};
-     activeRecorder.onerror=e=>{if(generation===playbackGeneration&&recorder===activeRecorder)setStatus('Video recorder error: '+(e.error?.message||'unknown error'),true)};
-     activeRecorder.onstop=()=>{
-       if(generation!==playbackGeneration||recorder!==activeRecorder)return;
-       let blob=new Blob(chunks,{type:mime});if(blob.size<5000){setStatus('The recording was too small. Keep the tab visible and try again.',true)}
-       else{
-        downloadURL=URL.createObjectURL(blob);const extension=mime.includes('mp4')?'mp4':'webm';
-        const a=document.createElement('a');a.href=downloadURL;a.download='FINOVA_Business_Wrapped.'+extension;document.body.appendChild(a);a.click();a.remove();
-        setStatus('Video exported: FINOVA_Business_Wrapped.'+extension+' ('+(blob.size/1048576).toFixed(1)+' MB).');
-       }
-       chunks=[];recorder=null;finalPlayback();$('story-format').disabled=false;
-     };
-     recorder.start(250);
-   }catch(e){recording=false;playing=false;setStatus('Recording could not start: '+e.message,true);finalPlayback();$('story-format').disabled=false;return}
- }
- raf=requestAnimationFrame(time=>renderLoop(time,generation));
+function activityStatus(){
+ if(recording){
+  const preview=playing?'Preview playing.':paused?'Preview paused.':'You can play the preview while exporting.';
+  setStatus(`Exporting full video · ${Math.floor(100*exportElapsed/(seconds*8))}% · ${preview} Keep this tab visible.`);
+ }else setStatus(paused?'Preview paused. Resume whenever you are ready.':playing?'Now playing FINOVA Wrapped!':'Story finished. Play again or export the full video.');
 }
-function reset(){
- // Invalidate queued callbacks before releasing private artwork and recording resources.
- playbackGeneration++;artworkGeneration++;playing=false;recording=false;
- cancelAnimationFrame(raf);raf=0;startTime=0;
+function stopPreview(){
+ playbackGeneration++;playing=false;paused=false;
+ cancelAnimationFrame(raf);raf=0;startTime=0;elapsed=0;
+ stopAudio(previewMusic);previewMusic=null;
+}
+function clearExport(){
+ exportGeneration++;recording=false;cancelAnimationFrame(exportRaf);exportRaf=0;exportElapsed=0;
  const activeRecorder=recorder;recorder=null;
  if(activeRecorder){
   activeRecorder.ondataavailable=null;activeRecorder.onerror=null;activeRecorder.onstop=null;
   if(activeRecorder.state!=='inactive'){try{activeRecorder.stop()}catch{}}
  }
- stopCapture();stopAudio();chunks=[];data=null;art=null;
- if(downloadURL){URL.revokeObjectURL(downloadURL);downloadURL=null}
- size='portrait';$('story-format').value=size;$('story-format').disabled=false;
+ stopCapture();stopAudio(exportMusic);exportMusic=null;chunks=[];
+}
+function renderLoop(now,generation){
+ if(generation!==playbackGeneration||!playing||!data)return;
+ const total=seconds*8;
+ elapsed=Math.min(total,Math.max(0,(now-startTime)/1000));
+ draw(Math.min(total-.001,elapsed));$('story-progress').value=100*elapsed/total;
+ if(elapsed<total){raf=requestAnimationFrame(time=>renderLoop(time,generation))}
+ else{
+  playing=false;raf=0;stopAudio(previewMusic);previewMusic=null;
+  updateControls();activityStatus();
+ }
+}
+function togglePlayback(){
+ if(!data)return;
+ if(playing){
+  elapsed=Math.min(seconds*8,Math.max(0,(performance.now()-startTime)/1000));
+  draw(Math.min(seconds*8-.001,elapsed));$('story-progress').value=100*elapsed/(seconds*8);
+  playing=false;paused=true;playbackGeneration++;cancelAnimationFrame(raf);raf=0;
+  previewMusic?.context.suspend().catch(()=>{});
+ }else{
+  if(paused){
+   startTime=performance.now()-elapsed*1000;
+   previewMusic?.context.resume().catch(()=>{});
+  }else{
+   elapsed=0;size=$('story-format').value;dimensions();draw(0);$('story-progress').value=0;
+   previewMusic=makeMusic();startTime=performance.now();
+  }
+  paused=false;playing=true;
+  const generation=++playbackGeneration;
+  raf=requestAnimationFrame(time=>renderLoop(time,generation));
+ }
+ updateControls();activityStatus();
+}
+function exportVideo(){
+ if(!data||recording)return;
+ if(typeof MediaRecorder==='undefined'||!canvas.captureStream){setStatus('Video recording is not supported by this browser. Use Chrome or Edge, or enjoy the animated story.',true);return;}
+ const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'].find(s=>MediaRecorder.isTypeSupported(s));
+ if(!mime){setStatus('No compatible browser video recording format. Try current Chrome or Edge.',true);return;}
+ const generation=++exportGeneration,exportData=data,exportArt=art;
+ try{
+  const exportCanvas=document.createElement('canvas');dimensions(exportCanvas,$('story-format').value);
+  draw(0,exportCanvas,exportData,exportArt);
+  exportMusic=makeMusic(false);captureStream=exportCanvas.captureStream(30);
+  exportMusic?.stream.getAudioTracks().forEach(track=>captureStream.addTrack(track));
+  if(downloadURL){URL.revokeObjectURL(downloadURL);downloadURL=null;}
+  chunks=[];recorder=new MediaRecorder(captureStream,{mimeType:mime,videoBitsPerSecond:4000000});
+  const activeRecorder=recorder;
+  activeRecorder.ondataavailable=e=>{if(generation===exportGeneration&&recorder===activeRecorder&&e.data.size)chunks.push(e.data);};
+  activeRecorder.onerror=e=>{
+   if(generation!==exportGeneration||recorder!==activeRecorder)return;
+   clearExport();updateControls();setStatus('Video recorder error: '+(e.error?.message||'unknown error'),true);
+  };
+  activeRecorder.onstop=()=>{
+   if(generation!==exportGeneration||recorder!==activeRecorder)return;
+   try{
+    const blob=new Blob(chunks,{type:mime});
+    if(blob.size<5000)setStatus('The recording was too small. Keep the tab visible and try again.',true);
+    else{
+     downloadURL=URL.createObjectURL(blob);const extension=mime.includes('mp4')?'mp4':'webm';
+     const a=document.createElement('a');a.href=downloadURL;a.download='FINOVA_Business_Wrapped.'+extension;document.body.appendChild(a);a.click();a.remove();
+     setStatus('Video exported: FINOVA_Business_Wrapped.'+extension+' ('+(blob.size/1048576).toFixed(1)+' MB).');
+    }
+   }catch(error){setStatus('Video could not be saved: '+error.message,true);}
+   finally{clearExport();updateControls();}
+  };
+  recorder.start(250);recording=true;exportElapsed=0;
+  const exportStart=performance.now();
+  let lastPercent=-1;
+  function exportLoop(now){
+   if(generation!==exportGeneration||!recording||recorder!==activeRecorder)return;
+   exportElapsed=Math.min(seconds*8,Math.max(0,(now-exportStart)/1000));
+   draw(Math.min(seconds*8-.001,exportElapsed),exportCanvas,exportData,exportArt);
+   const percent=Math.floor(100*exportElapsed/(seconds*8));
+   if(percent!==lastPercent){lastPercent=percent;activityStatus();}
+   if(exportElapsed<seconds*8)exportRaf=requestAnimationFrame(exportLoop);
+   else{exportRaf=0;if(activeRecorder.state!=='inactive')activeRecorder.stop();}
+  }
+  exportRaf=requestAnimationFrame(exportLoop);updateControls();activityStatus();
+ }catch(error){clearExport();updateControls();setStatus('Recording could not start: '+error.message,true);}
+}
+function reset(){
+ // Invalidate queued callbacks before releasing private artwork and recording resources.
+ stopPreview();clearExport();artworkGeneration++;data=null;art=null;
+ if(downloadURL){URL.revokeObjectURL(downloadURL);downloadURL=null;}
+ size='portrait';$('story-format').value=size;
  $('story-sound').checked=true;$('story-progress').value=0;
- $('story-play').disabled=false;$('story-play').textContent='▶ Play Wrapped';
- $('story-export').disabled=false;$('story-export').textContent='↧ Export video';
- dimensions();ctx.fillStyle=palette[0][0];ctx.fillRect(0,0,canvas.width,canvas.height);
+ updateControls();dimensions();ctx.fillStyle=palette[0][0];ctx.fillRect(0,0,canvas.width,canvas.height);
  setStatus('Loading financial story…');
 }
 function init(){
- dimensions();$('story-play').addEventListener('click',()=>play(false));$('story-export').addEventListener('click',()=>play(true));
- $('story-format').addEventListener('change',()=>{if(playing)return;size=$('story-format').value;dimensions();draw(.9)});
- document.addEventListener('visibilitychange',()=>{if(document.hidden&&recording)setStatus('Keep this browser tab visible during export for smooth video recording.',true)});
+ dimensions();$('story-play').addEventListener('click',togglePlayback);$('story-export').addEventListener('click',exportVideo);
+ $('story-format').addEventListener('change',()=>{if(playing||paused||recording)return;size=$('story-format').value;dimensions();draw(.9);});
+ document.addEventListener('visibilitychange',()=>{if(document.hidden&&recording)setStatus('Keep this browser tab visible during export for smooth video recording.',true);});
 }
-window.FINOVAStory={init,reset,setData(d){data=d;draw(.9);setStatus('Ready · 8 scenes · 30 seconds. Choose Play or Export video.')},setArt(image){const generation=++artworkGeneration;const img=new Image();img.onload=()=>{if(generation!==artworkGeneration)return;art=img;draw(.9)};img.onerror=()=>{if(generation===artworkGeneration)setStatus('Generated artwork could not be loaded.',true)};img.src=image},setStatus,resetArt(){artworkGeneration++;art=null;draw(.9)}};
+window.FINOVAStory={init,reset,setData(d){
+ if(d===data)return;
+ stopPreview();clearExport();artworkGeneration++;art=null;data=d;updateControls();$('story-progress').value=0;
+ if(data)draw(.9);else{ctx.fillStyle=palette[0][0];ctx.fillRect(0,0,canvas.width,canvas.height);}
+ setStatus(data?'Ready · 8 scenes · 30 seconds. Play, pause or export the full video anytime.':'Loading financial story…');
+},setArt(image){const generation=++artworkGeneration;const img=new Image();img.onload=()=>{if(generation!==artworkGeneration)return;art=img;draw(elapsed||.9);};img.onerror=()=>{if(generation===artworkGeneration)setStatus('Generated artwork could not be loaded.',true);};img.src=image;},setStatus,resetArt(){artworkGeneration++;art=null;draw(elapsed||.9);}};
 })();

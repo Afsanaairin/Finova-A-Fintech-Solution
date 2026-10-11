@@ -127,7 +127,8 @@ class AuthenticationHTTPTests(unittest.TestCase):
         status, payload, headers = self.request('GET', '/api/auth/me')
         self.assertEqual(status, 200)
         self.assertEqual(payload, {'ok': True, 'user': None})
-        self.assertIn('finova_demo', self.cookies(headers))
+        self.assertNotIn('finova_demo', self.cookies(headers))
+        self.assertFalse(server.SESSIONS)
 
         cookies, code = self.login()
         self.assertIn('finova_auth', cookies)
@@ -163,21 +164,48 @@ class AuthenticationHTTPTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn('error', payload)
 
-    def test_anonymous_and_authenticated_dashboard_remain_available(self):
-        status, anonymous, headers = self.request('GET', '/api/dashboard')
-        self.assertEqual(status, 200)
-        demo_cookie = self.cookies(headers)['finova_demo'].value
+    def test_every_financial_endpoint_requires_email_login(self):
+        routes = [('GET', '/api/dashboard'), ('GET', '/api/health'), ('GET', '/api/akamai-test')]
+        routes += [('POST', path) for path in ('/api/upload', '/api/pdf/confirm', '/api/pdf/cancel',
+                                             '/api/reset', '/api/ask', '/api/cover',
+                                             '/api/reports/preview', '/api/reports/download')]
+        for mode in ('local', 'proxy'):
+            self.http_server.security = (SecuritySettings() if mode == 'local' else
+                                        SecuritySettings('proxy', 'https://finova.example', 'x' * 43))
+            self.origin = (f'http://127.0.0.1:{self.port}' if mode == 'local' else 'https://finova.example')
+            for method, path in routes:
+                with self.subTest(mode=mode, path=path), patch.object(server, 'call_akamai') as upstream:
+                    status, payload, headers = self.request(method, path, {} if method == 'POST' else None)
+                    self.assertEqual(status, 401, payload)
+                    self.assertIn('Log in', payload['error'])
+                    self.assertNotIn('finova_demo', self.cookies(headers))
+                    upstream.assert_not_called()
+            self.assertFalse(server.SESSIONS)
+
+    def test_authenticated_dashboard_is_available_and_expired_login_is_rejected(self):
         cookies, _ = self.login()
+        token = cookies['finova_auth'].value
+        cookie_header = f'finova_demo={cookies["finova_demo"].value}; finova_auth={token}'
         status, authenticated, _ = self.request(
-            'GET', '/api/dashboard',
-            headers={'Cookie': (
-                f'finova_demo={demo_cookie}; '
-                f'finova_auth={cookies["finova_auth"].value}'
-            )},
+            'GET', '/api/dashboard', headers={'Cookie': cookie_header},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(authenticated, anonymous)
         self.assertEqual(authenticated['transaction_count'], server.DEFAULT_RESULT['transaction_count'])
+        with patch.object(self.auth, 'clock', return_value=self.auth.clock() + 604801):
+            status, payload, headers = self.request('GET', '/api/dashboard', headers={'Cookie': cookie_header})
+        self.assertEqual(status, 401, payload)
+        self.assertEqual(self.cookies(headers)['finova_auth']['max-age'], '0')
+
+    def test_financial_session_cannot_be_reused_by_another_email(self):
+        first, _ = self.login()
+        first_cookie = f'finova_demo={first["finova_demo"].value}; finova_auth={first["finova_auth"].value}'
+        self.assertEqual(self.upload(first_cookie)[0], 200)
+        second, _ = self.login('second@example.com')
+        status, dashboard, headers = self.request('GET', '/api/dashboard', headers={
+            'Cookie': f'finova_demo={first["finova_demo"].value}; finova_auth={second["finova_auth"].value}'})
+        self.assertEqual(status, 200)
+        self.assertEqual(dashboard, server.DEFAULT_RESULT)
+        self.assertNotEqual(self.cookies(headers)['finova_demo'].value, first['finova_demo'].value)
 
     def test_logout_removes_uploaded_data_and_rotates_the_demo_cookie(self):
         cookies, _ = self.login()
@@ -205,8 +233,7 @@ class AuthenticationHTTPTests(unittest.TestCase):
                 status, dashboard, _ = self.request(
                     'GET', '/api/dashboard', headers={'Cookie': cookie_header}
                 )
-                self.assertEqual(status, 200, dashboard)
-                self.assertEqual(dashboard, server.DEFAULT_RESULT)
+                self.assertEqual(status, 401, dashboard)
                 self.assertNotIn('Confidential account details', json.dumps(dashboard))
         self.assertNotIn(old_sid, server.SESSIONS)
 
@@ -257,8 +284,8 @@ class AuthenticationHTTPTests(unittest.TestCase):
         status, dashboard, _ = self.request(
             'GET', '/api/dashboard', headers={'Cookie': f'finova_demo={new_sid}'}
         )
-        self.assertEqual(status, 200)
-        self.assertEqual(dashboard, server.DEFAULT_RESULT)
+        self.assertEqual(status, 401)
+        self.assertNotIn('Confidential account details', json.dumps(dashboard))
 
     def test_reset_in_progress_cannot_recreate_a_retired_session(self):
         cookies, _ = self.login()

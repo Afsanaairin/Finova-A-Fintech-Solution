@@ -5,14 +5,16 @@ FINOVA is a working Hack Midwest 2026 MVP for turning business financial records
 
 ## The first version already works
 
-- Open a visual dashboard containing 33 months of fictional business data from `data/finova.xlsx`.
+- Log in with an emailed code to open a visual dashboard containing 33 months of fictional business data from `data/finova.xlsx`.
 - Upload your own **.xlsx** workbook, **.csv** transactions file, or **.pdf** bank statement/customer invoice. Review PDF records before analysis; PDF extraction requires the optional tools below.
 - Analyze cash receipts, payments, net cash movement, categories, and invoice-based revenue separately.
 - Detect unusually high category spending, subscription price increases, and late invoices.
 - Explore an illustrative three-month cash and invoiced-revenue forecast with a what-if calculator.
 - Review a five-service subscription register and a searchable transaction ledger.
 - Ask financial questions: offline rule-based answers work without credentials, with **Akamai `hackathon-chat`** used when your team's key is configured.
-- Generate optional **Akamai `hackathon-image`** decorative cover artwork for Business Wrapped (requires key).
+- **Ask FINOVA** stays on the current page: Overview keeps its assistant panel; Anomaly Explorer, Forecast & Scenarios, Subscriptions and Transactions open a compact panel at the bottom right. The rest of the page stays clickable, scrollable and hoverable. An anomaly's **Ask FINOVA about this** button opens the panel with that finding's question. Close it with × or Escape.
+- Optional **Akamai `hackathon-image`** artwork and connection checks remain available through the backend APIs; the client interface focuses on the financial story, playback and export.
+- **Business Wrapped** supports Play, Pause and Resume. **Export video** stays available during playback or while paused and records the complete story separately, so preview controls do not interrupt the download. Exports take about 30 seconds; keep the tab visible. The file includes the selected soundtrack without playing a second soundtrack over the preview.
 
 ## 1 — Extract and launch (no package installation)
 
@@ -43,7 +45,7 @@ python3 run.py
 
 Open **http://127.0.0.1:8000** in your browser.
 
-No virtual environment or `pip install` is required. Stop with **Ctrl+C**. If you get *Address already in use*, edit `PORT=8000` in `.env` to `8001`, or set the `PORT` environment variable. `.env` is optional for basic operation.
+No virtual environment or `pip install` is required. Stop with **Ctrl+C**. If you get *Address already in use*, edit `PORT=8000` in `.env` to `8001`, or set the `PORT` environment variable. Configure SMTP delivery as described below to enable login; these settings can be supplied in `.env` or environment variables.
 
 ## 2 — Connect your Akamai hackathon key
 
@@ -77,9 +79,11 @@ python3 run.py
 
 ## Passwordless email login
 
-The top-right **Log in** button accepts an email address and sends a six-digit
+The landing page accepts an email address and sends a six-digit
 one-time code. Users do not need a password, and recipient addresses are not
-restricted to Gmail. The dashboard remains available as an anonymous demo.
+restricted to Gmail. Login is required before opening Overview or any other
+workspace page. Financial APIs also require a valid email-login session, including
+when the server runs behind the authenticated HTTPS proxy.
 
 To enable delivery, configure the following values in the existing `.env` file
 without replacing the Akamai settings:
@@ -103,7 +107,7 @@ normal password. Leave `SMTP_FROM` blank to use `SMTP_USER`, or set it to the
 same sending address. Gmail uses STARTTLS on port 587. Delivery remains subject
 to Gmail sending limits and recipient spam filters.
 
-Restart the server after setup. Click **Log in**, request a code, check the inbox
+Restart the server after setup. Open FINOVA, request a code, check the inbox
 and spam folder, and enter the code. Codes expire after five minutes by default,
 are valid once, and allow at most five incorrect attempts. Sending keeps a
 60-second resend cooldown for each email address, with no application-level
@@ -112,11 +116,12 @@ hourly cap per email or IP. Different addresses can request codes independently.
 Authentication uses an HttpOnly cookie and stores users, verification challenges,
 rate limits, and session hashes in `data/auth.sqlite3`, which is ignored by Git.
 Login sessions survive server restarts and expire after seven days by default.
-Uploaded financial data still belongs to the existing browser demo session;
+Uploaded financial data belongs to the browser financial session, bound to the
+logged-in email and the verified proxy identity where applicable;
 logging in does not synchronize it across devices or persist it across restarts.
 Logging out deletes the current financial demo session, clears the user's email,
 uploaded results, AI answers, artwork and playback state from the page, and opens
-a fresh default demo. Existing tabs in the same browser are notified to reset,
+the login page. Existing tabs in the same browser are notified to reset,
 and pages restored from browser history reload the current server state. Pending
 uploads cannot restore a session that was retired during logout.
 
@@ -235,6 +240,19 @@ The upload screen reports whether PDF extraction is available. Processing is loc
 
 **DO NOT double count:** `Operating Expenses` and `Payroll` already feed `Transactions`; `Revenue` is invoice-based, while `Transactions` income means money collected. Adding those together is incorrect.
 
+### Anomaly investigations and downloadable reports
+
+Select a finding in **Anomaly Explorer** to see five questions: what happened, why FINOVA flagged it, why it matters, possible explanations, and the recommended investigation. Recorded facts, conditional cash impacts, unconfirmed causes and recommendations are labeled separately. The compact summary cards show counts; the selected investigation contains the supporting evidence. Several overdue invoices form one grouped pattern.
+
+Report details stay in **Anomaly Explorer**. Select a financial signal, review its investigation, and use **Download report (PDF)** to save that finding's report. The PDF includes the five questions, historical payment charts, supporting records, source information and methodology.
+
+- Supporting records come from the session's complete source ledger, including records older than the dashboard's latest 100 transactions. Payroll and operating-expense sheets are not added to the ledger totals again.
+- Invoice balances are the latest supplied snapshot at the dataset's reporting date; reports do not reconstruct historical payment balances. Missing opening cash or incomplete transaction coverage leaves business cash balances unknown. Invoice-only reports show invoice amounts and known balances without inventing cash receipts or business forecasts.
+- Cash received minus cash paid is **cash movement, not accounting profit**. No accounting-profit figure is calculated.
+- Reports work offline without an AI key. Python calculates the figures and builds the PDF document. The PDF exporter uses standard-library modules and built-in Latin/Windows-1252 fonts; no pip install or browser print dialog is needed. Unsupported font characters are replaced in PDF text, while Anomaly Explorer retains Unicode.
+
+Restart `python3 run.py` (or `py -3 run.py` on Windows) after updating the backend, then hard-refresh the browser. Uploaded sources follow the existing in-memory session lifecycle; logout clears them. PDF downloads are served with the same session, proxy-authentication and CSRF checks as other financial endpoints.
+
 ## 5 — Verification
 
 On Windows:
@@ -249,7 +267,7 @@ On macOS/Linux:
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover financial reconciliations, anomalies, cash balances, forecasting, CSV/XLSX parsing, PDF extraction and OCR, invoice-only analysis, the review/confirmation lifecycle, proxy authentication, session isolation, request limits, and secret handling. They never require live AI credentials. Actual PDF/OCR integration tests are skipped if their optional system tools are not installed.
+Tests cover financial reconciliations, anomalies, cash balances, forecasting, CSV/XLSX parsing, PDF extraction and OCR, invoice-only analysis, the review/confirmation lifecycle, report periods and PDF structure, proxy authentication, session isolation, request limits, and secret handling. They never require live AI credentials. Actual PDF/OCR integration tests are skipped if their optional system tools are not installed.
 
 ## 6 — Architecture
 
@@ -262,6 +280,8 @@ Python ThreadingHTTPServer (server.py)
    ├─ PDF drafts (pdf_reader.py, local Poppler + optional Tesseract)
    │    └─ Browser review → confirmation → validated financial records
    ├─ Financial calculations (finance.py, stdlib statistics)
+   ├─ Five-question investigations (investigations.py)
+   ├─ Period reports and chart PDFs (reports.py + report_pdf.py, stdlib)
    ├─ Offline Q&A based on computed metrics
    └─ Akamai workshop API via HTTPS (optional)
          ├─ hackathon-chat: financial summaries and questions

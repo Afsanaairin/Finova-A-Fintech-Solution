@@ -90,6 +90,7 @@ def post(path, payload, session='pdf-test-session', content_type='application/js
     handler.server = SimpleNamespace(security=server.SecuritySettings(), server_port=8000)
     handler.rfile = io.BytesIO(body)
     handler._session = lambda: session
+    handler._require_login = lambda: True
     handler.send_json = lambda status, data: (status, data)
     return handler.do_POST()
 

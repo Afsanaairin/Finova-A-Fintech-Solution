@@ -1,7 +1,7 @@
 """Exercise passwordless login over HTTP without sending real email."""
 import http.client
 from http.cookies import SimpleCookie
-from http.server import ThreadingHTTPServer
+from security import FinovaHTTPServer, SecuritySettings
 import json
 from pathlib import Path
 import sys
@@ -43,7 +43,7 @@ class AuthenticationHTTPTests(unittest.TestCase):
         ]
         for active_patch in self.patches:
             active_patch.start()
-        self.http_server = ThreadingHTTPServer(('127.0.0.1', 0), QuietHandler)
+        self.http_server = FinovaHTTPServer(('127.0.0.1', 0), QuietHandler)
         self.port = self.http_server.server_address[1]
         self.origin = f'http://127.0.0.1:{self.port}'
         self.thread = threading.Thread(target=self.http_server.serve_forever, daemon=True)
@@ -60,9 +60,13 @@ class AuthenticationHTTPTests(unittest.TestCase):
     def request(self, method, path, payload=None, headers=None, raw=None, origin=True):
         request_headers = {}
         if method == 'POST':
+            request_headers['X-Finova-Request'] = '1'
             request_headers['Content-Type'] = 'application/json'
             if origin:
                 request_headers['Origin'] = self.origin
+        if self.http_server.security.mode == 'proxy':
+            request_headers.update({'Host': 'finova.example', 'X-Finova-Proxy-Token': 'x' * 43,
+                                    'X-Finova-User': 'reader', 'X-Forwarded-Proto': 'https'})
         request_headers.update(headers or {})
         if raw is not None:
             body = raw
@@ -333,6 +337,7 @@ class AuthenticationHTTPTests(unittest.TestCase):
 
     def test_public_origin_overrides_the_inferred_host(self):
         self.settings['PUBLIC_ORIGIN'] = 'https://finova.example'
+        self.http_server.security = SecuritySettings('proxy', 'https://finova.example', 'x' * 43)
         status, payload, _ = self.request(
             'POST', '/api/auth/send-code', {'email': 'reader@example.com'}
         )
@@ -367,7 +372,8 @@ class AuthenticationHTTPTests(unittest.TestCase):
 
     def test_production_cookie_is_secure(self):
         self.settings['COOKIE_SECURE'] = 'true'
-        self.origin = f'https://127.0.0.1:{self.port}'
+        self.http_server.security = SecuritySettings('proxy', 'https://finova.example', 'x' * 43)
+        self.origin = 'https://finova.example'
         cookies, _ = self.login()
         self.assertTrue(cookies['finova_auth']['secure'])
         self.assertTrue(cookies['finova_auth']['httponly'])

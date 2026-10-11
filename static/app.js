@@ -7,8 +7,12 @@ let initialLayoutHTML = null;
 const pendingRequests = new Set();
 const SESSION_ENDED_MESSAGE = 'This session has ended.';
 const LOGOUT_EVENT_KEY = 'finova_logout';
+let activeCardInfo = null;
+let pinnedCardInfo = null;
+let cardInfoCloseTimer;
+let serverHasPDF = null;
 const $ = id => document.getElementById(id);
-const fmt = x => '$' + Math.abs(Number(x||0)).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
+const fmt = x => x === null || x === undefined ? 'Not provided' : '$' + Math.abs(Number(x)).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
 const signed = x => (Number(x)<0 ? '−' : '') + fmt(x);
 const text = (id,value) => {$(id).textContent = String(value)};
 const friendlyMonth = iso => new Date(iso+'-01T00:00:00').toLocaleString('en-US',{month:'short',year:'numeric'});
@@ -16,18 +20,24 @@ const escapeHTML = value => String(value??'').replace(/[&<>"']/g, ch => ({'&':'&
 function notify(message, bad=false) { if(message===SESSION_ENDED_MESSAGE)return;const box=$('alert');box.textContent=message;box.classList.remove('hidden');box.classList.toggle('error',bad);setTimeout(()=>box.classList.add('hidden'),7000);}
 const pageInfo = {anomalies:['Anomaly Explorer','Find what changed. Understand why it matters.','Evidence-backed cost and invoice investigations.'],overview:['Overview','A clearer picture of your business.','From transactions to foresight. Understand what changed, what matters, and what comes next.'],forecast:['Forecast & Scenarios','Plan for what comes next.','Explore the cash implications of tomorrow’s decisions.'],subscriptions:['Subscriptions','Make every recurring dollar count.','Understand recurring expenses and price changes.'],transactions:['Transactions','Your money, line by line.','Transparent transaction analysis with an audit trail.'],wrapped:['Business Wrapped','Your financial story, reimagined.','FINOVA turns numbers into a meaningful business recap.']};
 function switchPage(id){
+ hideCardInfo();
  document.querySelectorAll('.page').forEach(el=>el.classList.toggle('hidden',el.id!==id));
  document.querySelectorAll('.nav-link').forEach(el=>el.classList.toggle('active',el.dataset.view===id));
  const [name,title,sub] = pageInfo[id];text('page-crumb',name);text('page-title',title);text('page-subtitle',sub);
  if(id==='overview'||id==='forecast') requestAnimationFrame(drawCharts);
  window.scrollTo({top:0,behavior:'smooth'});
 }
-async function getJSON(url, options) {
+async function getJSON(url, options = {}) {
+  const {timeoutMs = 45000, timeoutMessage = 'The request timed out. Check that FINOVA is running and try again.', ...requestOptions} = options;
+  const headers = new Headers(requestOptions.headers);
+  if ((requestOptions.method || 'GET').toUpperCase() === 'POST') headers.set('X-Finova-Request', '1');
+  let timedOut = false;
   const controller = new AbortController();
   const version = clientSessionVersion;
   pendingRequests.add(controller);
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
-    const response = await fetch(url, {...options, cache: 'no-store', signal: controller.signal});
+    const response = await fetch(url, {...requestOptions, headers, cache: 'no-store', signal: controller.signal});
     let payload;
     try {
       payload = await response.json();
@@ -43,6 +53,7 @@ async function getJSON(url, options) {
     }
     return payload;
   } catch (error) {
+    if (version === clientSessionVersion && timedOut) throw new Error(timeoutMessage);
     if (controller.signal.aborted || version !== clientSessionVersion) {
       const cancelled = new Error(SESSION_ENDED_MESSAGE);
       cancelled.name = 'AbortError';
@@ -50,6 +61,7 @@ async function getJSON(url, options) {
     }
     throw error;
   } finally {
+    clearTimeout(timer);
     pendingRequests.delete(controller);
   }
 }
@@ -122,6 +134,8 @@ function returnToInitialState(broadcast = false) {
   resendAvailableByEmail.clear();
   if (resendTimer !== null) clearInterval(resendTimer);
   resendTimer = null;
+  hideCardInfo();
+  window.FINOVAPdf?.clear();
   window.FINOVAStory.reset();
   const layout = document.querySelector('.layout');
   if (layout && initialLayoutHTML !== null) layout.innerHTML = initialLayoutHTML;
@@ -257,23 +271,40 @@ function lineChart(host,rows, includeForecast=false){
  const boundary=includeForecast?`<line x1="${x(Math.max(0,rows.length-4))}" y1="${pT}" x2="${x(Math.max(0,rows.length-4))}" y2="${H-pB}" stroke="#a5aec0" stroke-dasharray="5 5"/><text x="${x(Math.max(0,rows.length-4))+6}" y="14" fill="#8b95a6" font-size="10">Forecast →</text>`:'';
  el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Financial cash-flow trend chart">${grid}${labels}${boundary}${series}</svg>`;
 }
-function drawCharts(){if(!DATA)return;lineChart('cash-chart',DATA.monthly.slice(-12));lineChart('forecast-chart',[...DATA.monthly.slice(-6),...DATA.forecast],true)}
+function drawCharts(){if(!DATA)return;lineChart('cash-chart',DATA.monthly.slice(-12));lineChart('forecast-chart',DATA.forecast.length?[...DATA.monthly.slice(-6),...DATA.forecast]:[],true)}
 function render(){if(!DATA)return;
- const d=DATA,t=d.totals; text('company-title',d.company);text('report-date',`${d.reporting_period} · ${d.transaction_count.toLocaleString()} transactions · ${d.months_count} months`);
+ document.querySelectorAll('.financial-card').forEach(card=>toggleCardBreakdown(card,false));
+ const d=DATA,t=d.totals,invoiceOnly=d.analysis_kind==='invoices'; text('company-title',d.company);text('report-date',invoiceOnly?`${d.invoice_count} customer invoices · evaluated as of ${d.as_of}`:`${d.reporting_period} · ${d.transaction_count.toLocaleString()} transactions · ${d.months_count} months`);
+ $('invoice-overview').classList.toggle('hidden',!invoiceOnly);
+ ['cash-metrics','cash-panels','revenue-note'].forEach(id=>$(id).classList.toggle('hidden',invoiceOnly));
+ document.querySelectorAll('.nav-link').forEach(button=>{
+   const unavailable=(invoiceOnly&&['forecast','transactions','wrapped'].includes(button.dataset.view))||(!d.forecast.length&&button.dataset.view==='forecast');
+   button.disabled=unavailable;button.title=unavailable?'Provide a complete cash ledger with sufficient history to use this view.':'';
+ });
+ const scoped=d.data_scope&&d.data_scope!=='complete';
+ $('data-scope-note').classList.toggle('hidden',!scoped);
+ text('data-scope-note',invoiceOnly?'Customer invoice report. Invoice amounts do not establish cash received; cash balances and forecasts need transaction records.':'This report covers the uploaded records only. It does not establish your business’s complete cash flow or closing cash balance.');
+ if(invoiceOnly){
+   text('invoice-total',fmt(t.invoice_amount));text('invoice-outstanding',fmt(t.outstanding_invoices));text('invoice-overdue',t.overdue_invoices);
+   text('invoice-unknown',`${t.unknown_invoice_balances} unknown payment balance(s); excluded from the subtotal.`);
+   text('invoice-as-of',`As of ${d.as_of} · ${t.missing_invoice_due_dates} missing due date(s)`);
+   $('invoice-table').innerHTML=d.invoices.map(i=>`<tr><td>${escapeHTML(i.customer)}<small>${escapeHTML(i.invoice)}</small></td><td>${escapeHTML(i.due||'Not provided')}</td><td>${escapeHTML(i.status)}</td><td class="right">${fmt(i.amount)}</td><td class="right">${fmt(i.outstanding)}</td></tr>`).join('');
+ }
  text('billed-revenue',t.last_month_invoiced_revenue===null?'Not provided':fmt(t.last_month_invoiced_revenue));text('metric-income',fmt(t.last_month_cash_in));text('metric-expenses',fmt(t.last_month_cash_out));text('metric-net',signed(t.last_month_net));text('metric-balance',signed(t.closing_cash));
  text('income-trend',t.cash_in_change_pct===null?'Cash receipts, not sales revenue':`${t.cash_in_change_pct>0?'+':''}${t.cash_in_change_pct}% vs previous month`);
- text('expense-trend',t.expense_change_pct===null?'Includes payroll & subscriptions':`${t.expense_change_pct>0?'+':''}${t.expense_change_pct}% vs previous month`);
+ text('expense-trend',t.expense_change_pct===null?'Uploaded outgoing payments':`${t.expense_change_pct>0?'+':''}${t.expense_change_pct}% vs previous month`);
+ text('balance-note',d.has_opening_cash?'From supplied opening cash + ledger entries':'Provide opening cash and a complete cash ledger');
  const biggest=Math.max(...d.categories.map(c=>c.amount),1);
  $('category-bars').innerHTML=d.categories.slice(0,6).map(c=>`<div><div class="bar-label"><span>${escapeHTML(c.category)}</span><b>${fmt(c.amount)}</b></div><div class="bar-bg"><div class="bar-fill" style="width:${Math.max(1,100*c.amount/biggest)}%"></div></div></div>`).join('')||'<p>No expense categories found.</p>';
  $('insight-list').innerHTML=d.anomalies.slice(0,4).map(a=>`<button class="insight insight-link" type="button" data-anomaly="${escapeHTML(a.id)}"><div class="insight-icon">!</div><div><strong>${escapeHTML(a.type)} · ${escapeHTML(a.category)}</strong><p>${escapeHTML(a.message)}</p><small>Investigate evidence →</small></div></button>`).join('')||'<p>No notable anomalies detected.</p>';
  $('insight-list').querySelectorAll('[data-anomaly]').forEach(button=>button.addEventListener('click',()=>openAnomaly(button.dataset.anomaly)));
  renderAnomalies();
- const future=d.forecast[0];text('predicted-sales',future.invoiced_revenue===null?'Not provided':fmt(future.invoiced_revenue));text('future-in',fmt(future.cash_in));text('future-out',fmt(future.cash_out));text('future-net',signed(future.net));text('future-ar',fmt(t.outstanding_invoices));
- $('invoice-list').innerHTML=d.overdue_invoices.slice(0,8).map(i=>`<div class="invoice"><div><strong>${escapeHTML(i.customer)}</strong> <span>· ${escapeHTML(i.invoice)} · due ${escapeHTML(i.due)}</span></div><b>${fmt(i.amount)} · ${i.overdue_days} days overdue</b></div>`).join('')||'<p>No overdue invoices in this dataset.</p>';
- text('sub-count',d.subscriptions.length);text('sub-monthly',fmt(t.subscription_monthly));text('sub-annual',fmt(t.subscription_annual));
+ const future=d.forecast[0];text('predicted-sales',fmt(future?.invoiced_revenue));text('future-in',fmt(future?.cash_in));text('future-out',fmt(future?.cash_out));text('future-net',signed(future?.net));text('future-ar',fmt(d.has_invoice_data?t.outstanding_invoices:null));
+ $('invoice-list').innerHTML=d.overdue_invoices.slice(0,8).map(i=>`<div class="invoice"><div><strong>${escapeHTML(i.customer)}</strong> <span>· ${escapeHTML(i.invoice)} · due ${escapeHTML(i.due)}</span></div><b>${fmt(i.amount)} · ${i.overdue_days} days overdue</b></div>`).join('')||(d.has_invoice_data?'<p>No overdue invoices with known balances in this dataset.</p>':'<p>Customer invoice records were not provided.</p>');
+ text('sub-count',d.has_subscription_data?d.subscriptions.length:'Not provided');text('sub-monthly',fmt(d.has_subscription_data?t.subscription_monthly:null));text('sub-annual',fmt(d.has_subscription_data?t.subscription_annual:null));
  $('subscription-list').innerHTML=d.subscriptions.map(s=>`<div class="subscription-row"><div class="service-icon">${escapeHTML((s.name||'?').slice(0,1))}</div><div class="service-name">${escapeHTML(s.name)}<small>Recurring monthly · Usage not known</small></div><div class="service-amount">${fmt(s.monthly_cost)}<small>per month</small></div><div class="review-tag ${s.price_increase===0?'ok':''}">${s.price_increase>0?`↑ ${fmt(s.price_increase)} price rise`:'No price change detected'}</div></div>`).join('')||'<div class="callout">No subscription sheet present in this upload.</div>';
- text('wrap-income',fmt(d.wrapped.cash_in));text('wrap-expense',fmt(d.wrapped.cash_out));text('wrap-month',friendlyMonth(d.wrapped.biggest_expense_month));text('wrap-category',d.wrapped.largest_category);text('wrap-subs',fmt(d.wrapped.subscription_annual));
- renderTransactions();updateScenario();window.FINOVAStory.setData(d);requestAnimationFrame(drawCharts);
+ if(d.wrapped){text('wrap-income',fmt(d.wrapped.cash_in));text('wrap-expense',fmt(d.wrapped.cash_out));text('wrap-month',friendlyMonth(d.wrapped.biggest_expense_month));text('wrap-category',d.wrapped.largest_category);text('wrap-subs',fmt(d.has_subscription_data?d.wrapped.subscription_annual:null));}
+ renderTransactions();updateScenario();window.FINOVAStory.setData(d.wrapped?d:null);requestAnimationFrame(drawCharts);
 }
 function openAnomaly(id){
   selectedAnomaly=id;
@@ -286,9 +317,10 @@ function renderAnomalies(){
   if(!DATA)return;
   const all=DATA.anomalies||[];
   text('anomaly-count',all.length);
-  text('spike-count',all.filter(a=>a.type==='Spending spike').length);
-  text('price-count',all.filter(a=>a.type==='Subscription increase').length);
-  text('overdue-count',DATA.totals.overdue_invoices);
+  text('spike-count',DATA.analysis_kind==='invoices'?'Not provided':all.filter(a=>a.type==='Spending spike').length);
+ text('price-count',DATA.has_subscription_data?all.filter(a=>a.type==='Subscription increase').length:'Not provided');
+ text('overdue-count',DATA.has_invoice_data?DATA.totals.overdue_invoices:'Not provided');
+  renderFinancialCards();
   const visible=all.filter(a=>anomalyFilter==='all'||a.type===anomalyFilter);
   if(!visible.some(a=>a.id===selectedAnomaly))selectedAnomaly=visible.length?visible[0].id:null;
   $('anomaly-list').innerHTML=visible.map(a=>`<button class="anomaly-item ${a.id===selectedAnomaly?'selected':''}" type="button" data-anomaly="${escapeHTML(a.id)}">
@@ -296,6 +328,113 @@ function renderAnomalies(){
     <small>${escapeHTML(a.month)} · ${escapeHTML(a.message)}</small></button>`).join('') || '<p class="anomaly-empty">No flagged patterns in this category.</p>';
   $('anomaly-list').querySelectorAll('[data-anomaly]').forEach(b=>b.addEventListener('click',()=>{selectedAnomaly=b.dataset.anomaly;renderAnomalies();}));
   renderAnomalyDetail(visible.find(a=>a.id===selectedAnomaly));
+}
+function hideCardInfo(){
+  clearTimeout(cardInfoCloseTimer);
+  document.querySelectorAll('.financial-card-info').forEach(button=>button.setAttribute('aria-expanded','false'));
+  document.querySelectorAll('.financial-card-tooltip').forEach(tip=>tip.classList.add('hidden'));
+  activeCardInfo=null;pinnedCardInfo=null;
+}
+function positionCardInfo(card){
+  const tip=card.querySelector('.financial-card-tooltip'),anchor=card.getBoundingClientRect();
+  const bounds=tip.getBoundingClientRect(),below=anchor.bottom+8,above=anchor.top-bounds.height-8;
+  tip.style.left=`${Math.max(16,Math.min(anchor.left,window.innerWidth-bounds.width-16))}px`;
+  tip.style.top=`${Math.max(16,Math.min(below+bounds.height<=window.innerHeight-16?below:above,window.innerHeight-bounds.height-16))}px`;
+}
+function showCardInfo(card,pin=false){
+  if(activeCardInfo!==card){hideCardInfo();activeCardInfo=card;}
+  clearTimeout(cardInfoCloseTimer);
+  if(pin)pinnedCardInfo=card;
+  card.querySelector('.financial-card-tooltip').classList.remove('hidden');
+  card.querySelector('.financial-card-info').setAttribute('aria-expanded','true');
+  positionCardInfo(card);
+}
+function toggleCardBreakdown(card,expanded){
+  const button=card.querySelector('.financial-card-toggle');
+  const show=expanded??button.getAttribute('aria-expanded')!=='true';
+  hideCardInfo();
+  button.setAttribute('aria-expanded',String(show));
+  button.setAttribute('aria-label',`${show?'Hide':'Show'} breakdown for ${card.querySelector('.financial-card-heading>span').textContent}`);
+  button.querySelector('span').textContent=show?'Hide breakdown':'Show breakdown';
+  button.querySelector('b').textContent=show?'⌃':'⌄';
+  card.querySelector('.financial-card-breakdown').classList.toggle('hidden',!show);
+}
+function renderFinancialCards(){
+  hideCardInfo();
+  const d=DATA,t=d.totals,latest=d.monthly.at(-1),previous=d.monthly.at(-2),all=d.anomalies||[];
+  const hasTransactions=d.analysis_kind!=='invoices';
+  const spikes=all.filter(a=>a.type==='Spending spike'),prices=all.filter(a=>a.type==='Subscription increase');
+  const invoiceFlags=all.filter(a=>a.type==='Overdue invoices'),invoiceFlag=invoiceFlags[0];
+  const subscriptionIncrease=prices.reduce((sum,a)=>sum+(a.amount-a.baseline),0);
+  const overdueBalance=invoiceFlag?.amount??0;
+  const count=(value,label)=>`${value} ${label}${value===1?'':'s'}`;
+  const patternTypes=[];
+  if(hasTransactions)patternTypes.push(count(spikes.length,'spending spike'));
+  if(d.has_subscription_data)patternTypes.push(count(prices.length,'subscription increase'));
+  if(d.has_invoice_data)patternTypes.push(count(invoiceFlags.length,'overdue-invoice flag'));
+  const period=latest?`${friendlyMonth(d.monthly[0].month)} – ${friendlyMonth(latest.month)}`:`Invoice records · as of ${d.as_of}`;
+  const amount=value=>value===null||value===undefined?'Not provided':Number(value).toLocaleString('en-US',{style:'currency',currency:'USD'});
+  const row=(label,value,total=false)=>`<div class="financial-breakdown-row${total?' financial-breakdown-total':''}"><span>${escapeHTML(label)}</span><b${total&&String(value).startsWith('-')?' class="financial-value-negative"':''}>${escapeHTML(value)}</b></div>`;
+  const note=message=>`<p class="financial-breakdown-note">${escapeHTML(message)}</p>`;
+  const explanations={
+    'cash-received':'Money actually received during the latest reporting month. Customer invoices show billed amounts separately.',
+    'cash-paid':'Money paid during the latest reporting month, including recorded payroll, supplier and operating payments.',
+    'net-cash':'Cash received minus cash paid. This measures cash flow, not accounting profit.',
+    'closing-cash':'Opening cash plus receipts minus payments across the reporting period. Complete transaction coverage is required.',
+    patterns:all.length?`${count(all.length,'pattern')} flagged: ${patternTypes.join(', ')}. One invoice flag can cover several invoices.`:'No patterns flagged in the provided records. Checks are limited to the data uploaded.',
+    spikes:hasTransactions?`${count(spikes.length,'category-month spending spike')} exceeded the recent median by more than 40% and at least $100.`:'Transaction records were not provided. Upload categorized expenses to check spending spikes.',
+    subscriptions:d.has_subscription_data?`${count(prices.length,'subscription price increase')} added ${amount(subscriptionIncrease)}/month compared with the first recorded charges.`:'Subscription records were not provided in this upload.',
+    overdue:d.has_invoice_data?`${count(t.overdue_invoices,'customer invoice')} overdue as of ${d.as_of}, with ${amount(overdueBalance)} in known outstanding balances.`:'Customer invoice records were not provided in this upload.'
+  };
+  const cashComparison=(key,change)=>row('Reporting month',latest?friendlyMonth(latest.month):'Not provided')+row('This month',amount(latest?.[key]))+row('Previous month',amount(previous?.[key]))+row('Change',change===null||change===undefined?'Not available':`${change>0?'+':''}${change}%`);
+  const breakdowns={
+    'cash-received':cashComparison('cash_in',t.cash_in_change_pct)+note('Calculated from posted Income transactions. Billed revenue is tracked separately.'),
+    'cash-paid':cashComparison('cash_out',t.expense_change_pct)+note('Calculated from posted Expense transactions. Payroll and supplier payments already in the ledger are counted once.'),
+    'net-cash':row('Cash received',amount(t.last_month_cash_in))+row('Cash paid',amount(t.last_month_cash_out))+row('Net cash movement',amount(t.last_month_net),true)+note('Cash received − cash paid. This is a cash-flow measure, not the company’s accounting profit.'),
+    'closing-cash':row('Opening cash',d.has_opening_cash?amount(t.closing_cash-t.net):'Not provided')+row('Cash received · whole period',amount(t.cash_in))+row('Cash paid · whole period',amount(t.cash_out))+row('Closing cash',amount(t.closing_cash),true)+note(d.has_opening_cash?'Opening cash + recorded receipts − recorded payments, across the uploaded reporting period.':'Provide an opening balance and a complete cash ledger to calculate closing cash.'),
+    patterns:row('Spending spikes',hasTransactions?spikes.length:'Not provided')+row('Subscription changes',d.has_subscription_data?prices.length:'Not provided')+row('Flags for overdue invoices',d.has_invoice_data?invoiceFlags.length:'Not provided'),
+    spikes:row('Spending spikes',hasTransactions?spikes.length:'Not provided'),
+    subscriptions:row('Subscription changes',d.has_subscription_data?prices.length:'Not provided')+(d.has_subscription_data?row('Added monthly cost',amount(subscriptionIncrease),true):''),
+    overdue:row('Overdue invoices',d.has_invoice_data?t.overdue_invoices:'Not provided')+(d.has_invoice_data?row('Reporting date',d.as_of)+row('Known overdue balance',amount(overdueBalance),true):'')
+  };
+  text('patterns-context',period);
+  text('spikes-context',hasTransactions?'Category spending across the uploaded period':'Transaction records not provided');
+  text('subscriptions-context',d.has_subscription_data?`${amount(subscriptionIncrease)} more per month`:'Subscription records not provided');
+  text('overdue-context',d.has_invoice_data?`${amount(overdueBalance)} known overdue · as of ${d.as_of}`:'Customer invoice records not provided');
+  document.querySelectorAll('.financial-card').forEach(card=>{
+    const kind=card.dataset.card;
+    card.querySelector('.financial-card-tooltip').textContent=explanations[kind];
+    card.querySelector('.financial-card-breakdown').innerHTML=breakdowns[kind];
+  });
+  const net=t.last_month_net;
+  text('net-cash-period',latest?`${friendlyMonth(latest.month)} · ${net>0?'Positive':net<0?'Negative':'No'} net cash movement`:'Cash transactions not provided');
+  $('metric-net').classList.toggle('metric-positive',net!==null&&net>0);
+  $('metric-net').classList.toggle('metric-negative',net!==null&&net<0);
+}
+function initFinancialCards(){
+  document.querySelectorAll('.financial-card').forEach(card=>{
+    const kind=card.dataset.card,label=card.querySelector('span'),title=label.textContent;
+    label.outerHTML=`<div class="financial-card-heading"><span id="card-${kind}-label">${escapeHTML(title)}</span><button type="button" class="financial-card-info" aria-label="About ${escapeHTML(title)}" aria-expanded="false" aria-controls="card-${kind}-tip" aria-describedby="card-${kind}-tip">ⓘ</button></div>`;
+    card.insertAdjacentHTML('beforeend',`<p id="card-${kind}-tip" class="financial-card-tooltip hidden" role="tooltip"></p><button type="button" class="financial-card-toggle" aria-label="Show breakdown for ${escapeHTML(title)}" aria-expanded="false" aria-controls="card-${kind}-breakdown"><span>Show breakdown</span><b aria-hidden="true">⌄</b></button><div id="card-${kind}-breakdown" class="financial-card-breakdown hidden" role="region" aria-labelledby="card-${kind}-label"></div>`);
+    const info=card.querySelector('.financial-card-info');
+    card.addEventListener('pointerenter',event=>{if(event.pointerType!=='touch')showCardInfo(card)});
+    card.addEventListener('pointerleave',()=>{
+      cardInfoCloseTimer=setTimeout(()=>{if(activeCardInfo===card&&pinnedCardInfo!==card&&document.activeElement!==info)hideCardInfo()},160);
+    });
+    info.addEventListener('focus',()=>showCardInfo(card));
+    info.addEventListener('blur',()=>{if(pinnedCardInfo!==card&&!card.matches(':hover'))hideCardInfo()});
+    info.addEventListener('click',()=>{if(pinnedCardInfo===card)hideCardInfo();else showCardInfo(card,true)});
+    card.querySelector('.financial-card-toggle').addEventListener('click',()=>toggleCardBreakdown(card));
+  });
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')hideCardInfo()});
+  document.addEventListener('pointerdown',event=>{if(activeCardInfo&&!activeCardInfo.contains(event.target))hideCardInfo()});
+  document.addEventListener('scroll',event=>{
+    if(activeCardInfo){
+      const bounds=activeCardInfo.getBoundingClientRect();
+      if(bounds.bottom<0||bounds.top>window.innerHeight)hideCardInfo();else positionCardInfo(activeCardInfo);
+    }
+  },{capture:true,passive:true});
+  window.addEventListener('resize',()=>{if(activeCardInfo)positionCardInfo(activeCardInfo)});
 }
 function renderAnomalyDetail(a){
   const el=$('anomaly-detail');
@@ -321,10 +460,24 @@ function renderAnomalyDetail(a){
 function renderTransactions(){if(!DATA)return;const q=$('transaction-search').value.trim().toLowerCase();const trs=DATA.recent_transactions.filter(t=>[t.description,t.category,t.vendor,t.date].some(x=>String(x).toLowerCase().includes(q)));
  $('transaction-table').innerHTML=trs.map(t=>`<tr><td>${escapeHTML(t.date)}</td><td><strong>${escapeHTML(t.description)}</strong></td><td>${escapeHTML(t.category)}</td><td>${escapeHTML(t.type)}</td><td class="right ${t.signed<0?'negative':'positive'}">${signed(t.signed)}</td></tr>`).join('')||'<tr><td colspan="5">No matching transactions found.</td></tr>';
 }
-function updateScenario(){if(!DATA)return;let r=Number($('rev-slider').value),e=Number($('exp-slider').value);text('rev-label',`${r>0?'+':''}${r}%`);text('exp-label',`${e>0?'+':''}${e}%`);let f=DATA.forecast[0];text('scenario-net',signed(f.cash_in*(1+r/100)-f.cash_out*(1+e/100)))}
-async function boot(){try { const status=await getJSON('/api/health');text('ai-connection',status.akamai_key_loaded?'Akamai key loaded (verify connection)':'Offline financial analysis ready');text('akamai-status',status.akamai_key_loaded?'Akamai team key loaded. Click Test Akamai connection to verify live access.':'Offline mode: configure your Akamai team key in finova/.env to generate AI artwork. The animated video works without a key.');DATA=await getJSON('/api/dashboard');render();} catch(e){notify(e.message,true)}}
-async function uploadFile(file){if(!file)return;if(!/\.(csv|xlsx)$/i.test(file.name)){notify('Choose a .xlsx or .csv file.',true);return}if(file.size>12*1024*1024){notify('File too large for this demo.',true);return}
- $('loading').style.display='block';try{const fd=new FormData();fd.append('file',file);const response=await getJSON('/api/upload',{method:'POST',body:fd});DATA=response.summary;window.FINOVAStory.resetArt();text('loaded-file',file.name);render();switchPage('overview');notify(`Analyzed ${DATA.transaction_count.toLocaleString()} financial transactions successfully.`)}catch(e){notify(e.message,true)}finally{$('loading').style.display='none';$('file-input').value=''}}
+function updateScenario(){if(!DATA)return;let r=Number($('rev-slider').value),e=Number($('exp-slider').value);text('rev-label',`${r>0?'+':''}${r}%`);text('exp-label',`${e>0?'+':''}${e}%`);let f=DATA.forecast[0];['rev-slider','exp-slider'].forEach(id=>$(id).disabled=!f);text('scenario-net',f?signed(f.cash_in*(1+r/100)-f.cash_out*(1+e/100)):'Not available')}
+async function boot(){try { const status=await getJSON('/api/health');serverHasPDF=Boolean(status.pdf_support);window.FINOVAPdf?.setCapabilities(status.pdf_support);text('pdf-support-note',!serverHasPDF?'Restart the FINOVA server and reload this page to enable PDF uploads.':!window.FINOVAPdf?'Reload this page to load the PDF upload interface.':status.pdf_support.text?'PDF extraction is available on this server.':'PDF extraction needs server setup; CSV and Excel are ready.');text('ai-connection',status.akamai_key_loaded?'Akamai key loaded (verify connection)':'Offline financial analysis ready');text('akamai-status',status.akamai_key_loaded?'Akamai team key loaded. Click Test Akamai connection to verify live access.':'Offline mode: configure your Akamai team key in finova/.env to generate AI artwork. The animated video works without a key.');DATA=await getJSON('/api/dashboard');if(DATA.import_source)text('loaded-file',DATA.import_source.filename);render();} catch(e){notify(e.message,true)}}
+function applyImport(summary,filename){DATA=summary;window.FINOVAStory.resetArt();text('loaded-file',filename);render();switchPage('overview');notify(DATA.analysis_kind==='invoices'?`Analyzed ${DATA.invoice_count} reviewed customer invoices.`:`Analyzed ${DATA.transaction_count.toLocaleString()} financial transactions successfully.`)}
+async function uploadFile(file,forceOCR=false){if(!file)return;if(!/\.(csv|xlsx|pdf)$/i.test(file.name)){notify('Choose a .xlsx, .csv or .pdf file.',true);return}if(file.size>12*1024*1024){notify('File too large for this demo.',true);return}
+ const isPDF=/\.pdf$/i.test(file.name);let progressTimer;
+ $('upload-error')?.classList.add('hidden');
+ try{
+  if(isPDF&&(serverHasPDF===false||!window.FINOVAPdf))throw new Error('PDF uploads need the updated FINOVA server. Stop the server with Ctrl+C, run python3 run.py again, then reload this page.');
+  $('loading').style.display='block';text('loading',isPDF?'Extracting PDF records for review…':'Reading your financial records…');
+  window.FINOVAPdf?.setBusy(true);$('file-input').disabled=true;$('reset-btn').disabled=true;
+  if(isPDF){const started=Date.now();progressTimer=setInterval(()=>{const elapsed=Math.floor((Date.now()-started)/1000);text('loading',`Extracting PDF records for review… ${elapsed}s elapsed. Scanned pages can take longer.`)},1000);}
+  const fd=new FormData();fd.append('file',file);if(forceOCR)fd.append('ocr','true');
+  const response=await getJSON('/api/upload',{method:'POST',body:fd,timeoutMs:isPDF?75000:45000,timeoutMessage:isPDF?'PDF extraction timed out. Restart FINOVA and try a smaller PDF.':'Upload timed out. Check that FINOVA is running and try again.'});
+  if(response.review_required){window.FINOVAPdf.show(response,file);notify('PDF extracted. Check the records and confirm before analysis.')}
+  else{window.FINOVAPdf?.clear();applyImport(response.summary,file.name)}
+ }catch(e){if($('upload-error')){text('upload-error',e.message);$('upload-error').classList.remove('hidden')}notify(e.message,true)}
+ finally{clearInterval(progressTimer);$('loading').style.display='none';$('file-input').value='';window.FINOVAPdf?.setBusy(false);$('file-input').disabled=false;$('reset-btn').disabled=false;}
+}
 async function ask(question){
  const output=$('ai-answer');output.textContent='FINOVA is analyzing the figures…';
  try{
@@ -339,9 +492,11 @@ async function ask(question){
 }
 window.addEventListener('DOMContentLoaded',()=>{
  initAuth();
+ initFinancialCards();
  document.querySelectorAll('.nav-link').forEach(b=>b.addEventListener('click',()=>switchPage(b.dataset.view)));
  $('file-input').addEventListener('change',e=>uploadFile(e.target.files[0]));
- $('reset-btn').addEventListener('click',async()=>{try{const res=await getJSON('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});DATA=res.summary;text('loaded-file','Demo workbook: finova.xlsx');window.FINOVAStory.resetArt();render();notify('Demo workbook restored.')}catch(e){notify(e.message,true)}});
+ window.FINOVAPdf?.init({getJSON,notify,reupload:uploadFile,onImport:applyImport});
+ $('reset-btn').addEventListener('click',async()=>{try{const res=await getJSON('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});window.FINOVAPdf?.clear();$('upload-error')?.classList.add('hidden');DATA=res.summary;text('loaded-file','Demo workbook: finova.xlsx');window.FINOVAStory.resetArt();render();switchPage('overview');notify('Demo workbook restored.')}catch(e){notify(e.message,true)}});
  $('transaction-search').addEventListener('input',renderTransactions);
  $('view-all-anomalies').addEventListener('click',()=>openAnomaly(null));
  document.querySelectorAll('.anomaly-filter').forEach(b=>b.addEventListener('click',()=>{
@@ -361,7 +516,7 @@ window.addEventListener('DOMContentLoaded',()=>{
  $('cover-btn').addEventListener('click',async()=>{
    const btn=$('cover-btn');btn.disabled=true;btn.textContent='Generating Akamai art…';
    text('akamai-status','Requesting artwork from Akamai. This can take a little time.');
-   try{const res=await getJSON('/api/cover',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+   try{const res=await getJSON('/api/cover',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',timeoutMs:120000});
      window.FINOVAStory.setArt(res.image);text('akamai-status','Akamai artwork received and added to the story. Play or export it now!');$('akamai-status').classList.remove('is-error');
    }catch(e){text('akamai-status',e.message+' · Your FINOVA Wrapped animation still works without this image.');$('akamai-status').classList.add('is-error')}
    finally{btn.disabled=false;btn.textContent='✦ Generate Akamai artwork'}

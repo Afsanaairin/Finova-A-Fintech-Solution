@@ -1,33 +1,59 @@
 """FINOVA hackathon demo server. Python 3.10+, no third-party packages."""
-import base64
 import json
 import os
 from pathlib import Path
 import secrets
 import threading
+import time
 from email.parser import BytesParser
 from email.policy import default
 from http import cookies
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from urllib import request, error
 from urllib.parse import urlsplit
 
 from auth import AuthError, AuthService
 from finance import analyze
+from security import FinovaHTTPServer, SecuritySettings
 from xlsx_reader import read_data
+from pdf_reader import pdf_capabilities, preview_pdf, reviewed_data
 
 BASE = Path(__file__).resolve().parent
 MAX_UPLOAD = 12 * 1024 * 1024
+MAX_UPLOAD_BODY = MAX_UPLOAD + 64 * 1024  # Multipart envelope allowance.
+MAX_JSON_BODY = 8 * 1024
+MAX_PDF_REVIEW_BODY = 2 * 1024 * 1024  # Reviewed records, bounded separately from chat requests.
+MAX_SESSIONS = 32
+SESSION_TTL = 60 * 60
 DATA_LOCK = threading.Lock()
 SESSIONS = {}
+PENDING_IMPORTS = {}
+PDF_REVIEW_SECONDS = 15 * 60
+
+
+class NoUpstreamRedirects(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib otherwise forwards Authorization to redirected destinations.
+        return None
+
+
+UPSTREAM_OPENER = request.build_opener(NoUpstreamRedirects())
+
+
+def upstream_json(req, timeout, maximum):
+    with UPSTREAM_OPENER.open(req, timeout=timeout) as response:
+        blob = response.read(maximum + 1)
+    if len(blob) > maximum:
+        raise RuntimeError('AI service response exceeded its size limit.')
+    return json.loads(blob)
 
 
 def config():
-    # Prefer the explicit project .env over inherited shell variables.
-    # The workshop also uses load_dotenv(..., override=True).
+    # The local workshop .env overrides the shell. A managed proxy deployment
+    # uses only its service environment, never credentials from the checkout.
     values = dict(os.environ)
     env = BASE / '.env'
-    if env.exists():
+    if values.get('FINOVA_DEPLOYMENT') != 'proxy' and env.exists():
         for line in env.read_text(encoding='utf-8').splitlines():
             line = line.strip()
             if not line or line.startswith('#') or '=' not in line:
@@ -57,8 +83,7 @@ def call_akamai(path, payload, timeout=35):
     req = request.Request(base + path, data=json.dumps(payload).encode(),
               headers={'Authorization':'Bearer '+key, 'Content-Type':'application/json'}, method='POST')
     try:
-        with request.urlopen(req, timeout=timeout) as res:
-            return json.loads(res.read(5_000_000))
+        return upstream_json(req, timeout, 5_000_000)
     except error.HTTPError as exc:
         # Keep the secret and upstream raw error out of responses.
         messages = {401:'Akamai rejected the team key (HTTP 401). Check OPENAI_API_KEY in .env.',
@@ -91,6 +116,14 @@ def offline_answer(question, summary):
                     f"Method: {finding.get('method','historical comparison')} "
                     f"Suggested next step: {finding.get('action','Review source records.')} "
                     'This is a signal to investigate, not proof of wrongdoing.')
+    if summary.get('analysis_kind') == 'invoices':
+        outstanding = totals['outstanding_invoices']
+        value = f'${outstanding:,.2f}' if outstanding is not None else 'not known'
+        unknown = totals['unknown_invoice_balances']
+        return (f"FINOVA reviewed {summary['invoice_count']} customer invoice(s). As of {summary['as_of']}, "
+                f"the known outstanding subtotal is {value}; {totals['overdue_invoices']} invoice(s) are overdue. "
+                f"Payment balances are unknown for {unknown} invoice(s). "
+                'Invoices alone do not establish cash received. Upload transaction records for cash movements and forecasts.')
     if 'subscr' in q or 'software' in q or 'adobe' in q or 'canva' in q:
         s = summary['subscriptions']
         if not s:
@@ -102,6 +135,8 @@ def offline_answer(question, summary):
                 f"(${totals['subscription_annual']:,.2f} annualized).{detail} "
                 'Payments do not prove whether a subscription was actually used.')
     if 'invoice' in q or 'late' in q or 'unpaid' in q or 'receivable' in q:
+        if not summary.get('has_invoice_data'):
+            return 'No customer invoice records were provided. Upload customer invoices to check outstanding balances and overdue dates.'
         inv = summary['overdue_invoices'][:3]
         detail = ' Examples: ' + '; '.join(f"{i['customer']} / {i['invoice']}: ${i['amount']:,.2f}, "
                               f"{i['overdue_days']} days overdue" for i in inv) if inv else ''
@@ -109,6 +144,9 @@ def offline_answer(question, summary):
                 f"${totals['outstanding_invoices']:,.2f}; {totals['overdue_invoices']} "
                 f"are overdue.{detail} Check with customers before assuming collection dates.")
     if 'forecast' in q or 'next month' in q or 'upcoming' in q or 'cash' in q or 'future' in q:
+        if not summary['forecast']:
+            return ('A business cash forecast is unavailable for this import. '
+                    'Provide a complete cash ledger covering at least three months; selected payments describe only the uploaded records.')
         f = summary['forecast'][0]
         return (f"For {f['month']}, projected cash receipts are ${f['cash_in']:,.2f} "
                 f"and payments are ${f['cash_out']:,.2f}; net movement is "
@@ -146,6 +184,8 @@ def ai_answer(question, summary):
     # transaction drilldowns stay local and are never shipped to the LLM.
     metrics = {k:summary[k] for k in ['company','as_of','reporting_period',
                 'transaction_count','totals','forecast','limitations']}
+    metrics.update({key: summary.get(key) for key in ('analysis_kind', 'data_scope', 'has_opening_cash',
+                                                    'has_invoice_data', 'has_subscription_data', 'forecast_available')})
     metrics['anomalies'] = [{k:a.get(k) for k in
               ('type','category','month','amount','baseline','increase_pct','message')}
               for a in summary['anomalies'][:10]]
@@ -169,8 +209,55 @@ DEFAULT_RESULT = analyze(DEFAULT_DATA)
 
 class Handler(BaseHTTPRequestHandler):
     server_version = 'FINOVA-Demo/3.0'
-    def log_message(self, fmt, *args):
-        print('%s - %s' % (self.address_string(), fmt % args))
+
+    def log_request(self, code='-', size='-'):
+        # Do not log query strings, credentials, cookies or uploaded data.
+        method = self.command if self.command in ('GET', 'POST') else 'OTHER'
+        print('%s %s %s' % (self.client_address[0], method, code))
+
+    def _authorize(self):
+        """Trust identity/HTTPS headers only after checking the proxy secret."""
+        settings = self.server.security
+        host = self.headers.get('Host', '')
+        self._user = 'local'
+        if settings.mode == 'proxy':
+            supplied = self.headers.get('X-Finova-Proxy-Token', '')
+            if not secrets.compare_digest(supplied.encode(), settings.proxy_token.encode()):
+                self.send_json(403, {'error': 'Authenticated HTTPS proxy required.'})
+                return False
+            self._user = self.headers.get('X-Finova-User', '')
+            if not self._user or self.headers.get('X-Forwarded-Proto') != 'https':
+                self.send_json(403, {'error': 'Authenticated HTTPS proxy required.'})
+                return False
+            expected_origin = settings.public_origin
+            valid_hosts = {urlsplit(expected_origin).netloc}
+        else:
+            port = self.server.server_port
+            valid_hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}
+            if port == 80:
+                valid_hosts.update({'127.0.0.1', 'localhost'})
+            expected_origin = 'http://' + host
+        # Prevent DNS rebinding and reject cross-site browser requests.
+        if len(self.headers.get_all('Host', [])) != 1 or host not in valid_hosts:
+            self.send_json(403, {'error': 'Unrecognized request host.'})
+            return False
+        origin = self.headers.get('Origin')
+        # Opening a link from another site is a legitimate top-level navigation.
+        # Only the static home page gets this exception; API requests, POSTs,
+        # embeds and mismatched Origins still fail the cross-site check.
+        home_navigation = (self.command == 'GET' and urlsplit(self.path).path == '/'
+                           and self.headers.get('Sec-Fetch-Mode') == 'navigate'
+                           and self.headers.get('Sec-Fetch-Dest') == 'document')
+        cross_site = self.headers.get('Sec-Fetch-Site') == 'cross-site'
+        if (origin is not None and origin != expected_origin) or (cross_site and not home_navigation):
+            self.send_json(403, {'error': 'Cross-site requests are not allowed.'})
+            return False
+        # Cross-origin forms cannot set this header. No CORS/OPTIONS grant is
+        # offered. This is a CSRF marker, not a credential or an AI API key.
+        if self.command == 'POST' and self.headers.get('X-Finova-Request') != '1':
+            self.send_json(403, {'error': 'FINOVA request header required.'})
+            return False
+        return True
 
     def _session(self):
         cookie = cookies.SimpleCookie()
@@ -179,11 +266,25 @@ class Handler(BaseHTTPRequestHandler):
         except cookies.CookieError:
             pass
         sid = cookie['finova_demo'].value if 'finova_demo' in cookie else ''
+        now = time.monotonic()
         with DATA_LOCK:
-            if not sid or sid not in SESSIONS:
+            for expired in [key for key, entry in SESSIONS.items() if now - entry['seen'] >= SESSION_TTL]:
+                del SESSIONS[expired]
+                PENDING_IMPORTS.pop(expired, None)
+            entry = SESSIONS.get(sid)
+            if entry is None or entry['user'] != self._user:
+                if len(SESSIONS) >= MAX_SESSIONS:
+                    self.send_json(503, {'error': 'Demo session capacity reached. Try again later.'})
+                    return None
                 sid = secrets.token_urlsafe(24)
-                SESSIONS[sid] = DEFAULT_RESULT
+                entry = SESSIONS[sid] = {'data': DEFAULT_RESULT, 'user': self._user, 'seen': now}
+            entry['seen'] = now
         self._set_cookie = sid
+        with DATA_LOCK:
+            expired = [key for key, review in PENDING_IMPORTS.items()
+                       if time.monotonic() - review['created'] > PDF_REVIEW_SECONDS]
+            for key in expired:
+                PENDING_IMPORTS.pop(key, None)
         return sid
 
     def _auth_token(self):
@@ -195,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
         return cookie['finova_auth'].value if 'finova_auth' in cookie else ''
 
     def _auth_cookie(self, token, max_age):
-        secure = config().get('COOKIE_SECURE', 'false').lower() == 'true'
+        secure = self.server.security.mode == 'proxy' or config().get('COOKIE_SECURE', 'false').lower() == 'true'
         self._set_auth_cookie = (
             f'finova_auth={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}'
             + ('; Secure' if secure else '')
@@ -210,7 +311,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         conf = config()
         scheme = 'https' if conf.get('COOKIE_SECURE', 'false').lower() == 'true' else 'http'
-        expected = conf.get('PUBLIC_ORIGIN', '').strip() or f"{scheme}://{self.headers.get('Host', '')}"
+        expected = self.server.security.public_origin or conf.get('PUBLIC_ORIGIN', '').strip() or f"{scheme}://{self.headers.get('Host', '')}"
         try:
             actual_url, expected_url = urlsplit(origin), urlsplit(expected)
             if actual_url.scheme not in ('http', 'https') or not actual_url.hostname:
@@ -259,10 +360,14 @@ class Handler(BaseHTTPRequestHandler):
                 AUTH.logout(self._auth_token())
                 self._auth_cookie('', 0)
                 # Retire uploaded data and start a fresh anonymous demo session.
+                sid = self._session()
+                if sid is None:
+                    return
                 with DATA_LOCK:
-                    SESSIONS.pop(self._set_cookie, None)
-                    self._set_cookie = secrets.token_urlsafe(24)
-                    SESSIONS[self._set_cookie] = DEFAULT_RESULT
+                    SESSIONS.pop(sid, None)
+                    PENDING_IMPORTS.pop(sid, None)
+                self._set_cookie = None
+                self._clear_demo_cookie = True
                 response = {'ok': True, 'user': None}
             return self.send_json(200, response)
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -284,9 +389,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('X-Frame-Options','DENY')
+        self.send_header('Referrer-Policy', 'same-origin')
         self.send_header('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         if getattr(self,'_set_cookie',None):
-            self.send_header('Set-Cookie', f'finova_demo={self._set_cookie}; HttpOnly; SameSite=Lax; Path=/')
+            secure = '; Secure' if self.server.security.mode == 'proxy' else ''
+            self.send_header('Set-Cookie', f'finova_demo={self._set_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}{secure}')
+        if getattr(self, '_clear_demo_cookie', False):
+            secure = '; Secure' if self.server.security.mode == 'proxy' else ''
+            self.send_header('Set-Cookie', f'finova_demo=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}')
         if getattr(self, '_set_auth_cookie', None):
             self.send_header('Set-Cookie', self._set_auth_cookie)
         if getattr(self, '_retry_after', None):
@@ -295,12 +405,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_json(self, status, payload):
-        self.send_bytes(status,json.dumps(payload,ensure_ascii=False,allow_nan=False).encode('utf-8'))
+        encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        # Guard against an upstream service accidentally echoing credentials.
+        conf = config()
+        for secret in (conf.get('OPENAI_API_KEY', ''), self.server.security.proxy_token):
+            if secret:
+                encoded = encoded.replace(json.dumps(secret, ensure_ascii=False)[1:-1], '[redacted]')
+        self.send_bytes(status, encoded.encode('utf-8'))
 
     def do_GET(self):
-        sid = self._session()
+        if not self._authorize():
+            return
         path = urlsplit(self.path).path
         if path == '/api/auth/me':
+            if self._session() is None:
+                return
             token = self._auth_token()
             try:
                 user = AUTH.get_user(token)
@@ -311,6 +430,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(503, {'error': 'Authentication is temporarily unavailable. Please try again.'})
         if path == '/api/health':
             return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_key_loaded':akamai_configured(), 'akamai_connected':False,
+                                       'pdf_support':pdf_capabilities(),
                                        'mode':'Akamai key loaded; connection not verified' if akamai_configured() else 'Offline demo' })
         if path == '/api/akamai-test':
             if not akamai_configured():
@@ -321,8 +441,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not base.startswith('https://'):
                     return self.send_json(400, {'error':'The Akamai endpoint must use HTTPS.'})
                 req=request.Request(base+'/models',headers={'Authorization':'Bearer '+conf['OPENAI_API_KEY']},method='GET')
-                with request.urlopen(req,timeout=20) as response:
-                    info=json.loads(response.read(100000))
+                info = upstream_json(req, 20, 100000)
                 aliases=[m['id'] for m in info.get('data',[]) if isinstance(m,dict) and 'id' in m]
                 return self.send_json(200,{'ok':True,'models':aliases,'message':'Akamai API key verified. Models: '+(', '.join(aliases) if aliases else 'service responded.')})
             except error.HTTPError as exc:
@@ -332,58 +451,135 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError,KeyError) as exc:
                 return self.send_json(502,{'ok':False,'error':'Akamai sent an unexpected response.'})
         if path == '/api/dashboard':
+            sid = self._session()
+            if sid is None:
+                return
             with DATA_LOCK:
-                data = SESSIONS.get(sid)
+                entry = SESSIONS.get(sid)
+                data = entry['data'] if entry else None
             if data is None:
                 return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
             return self.send_json(200, data)
-        if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js'):
+        if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js','/static/pdf-upload.js'):
             file = BASE/'static'/('index.html' if path=='/' else path.removeprefix('/static/'))
             return self.send_bytes(200,file.read_bytes(),{'html':'text/html; charset=utf-8','css':'text/css; charset=utf-8','js':'text/javascript; charset=utf-8'}[file.suffix.lstrip('.')] if file.suffix!='.html' else 'text/html; charset=utf-8')
         return self.send_json(404,{'error':'Not found'})
 
     def do_POST(self):
-        sid = self._session()
+        if not self._authorize():
+            return
         path = urlsplit(self.path).path
         if path.startswith('/api/auth/'):
+            if self._session() is None:
+                return
             return self.handle_auth_post(path)
+        if path not in ('/api/upload', '/api/pdf/confirm', '/api/pdf/cancel', '/api/reset', '/api/ask', '/api/cover'):
+            return self.send_json(404, {'error': 'Unknown endpoint.'})
         try:
-            length = int(self.headers.get('Content-Length', '0'))
-            if length <= 0 or length > MAX_UPLOAD:
-                return self.send_json(413,{'error':'Request is empty or larger than 12 MB.'})
+            if self.headers.get_all('Transfer-Encoding'):
+                return self.send_json(400, {'error': 'Transfer-Encoding is not supported.'})
+            lengths = self.headers.get_all('Content-Length', [])
+            if not lengths:
+                return self.send_json(411, {'error': 'Content-Length is required.'})
+            if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit():
+                return self.send_json(400, {'error': 'Invalid Content-Length.'})
+            length = int(lengths[0])
+            maximum = MAX_UPLOAD_BODY if path == '/api/upload' else MAX_JSON_BODY
+            if path == '/api/pdf/confirm':
+                maximum = MAX_PDF_REVIEW_BODY
+            if length > maximum:
+                return self.send_json(413, {'error': 'Request exceeds the upload or JSON size limit.'})
+            if length <= 0:
+                return self.send_json(400, {'error': 'Request body is empty.'})
             body = self.rfile.read(length)
+            if len(body) != length:
+                return self.send_json(400, {'error': 'Incomplete request body.'})
+            if path != '/api/upload':
+                if self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
+                    return self.send_json(415, {'error': 'Expected application/json.'})
+                payload = json.loads(body.decode('utf-8'))
+                if not isinstance(payload, dict):
+                    return self.send_json(400, {'error': 'Expected a JSON object.'})
+            sid = self._session()
+            if sid is None:
+                return
             if path == '/api/upload':
                 ctype = self.headers.get('Content-Type','')
                 if not ctype.startswith('multipart/form-data'):
                     return self.send_json(400,{'error':'Expected multipart file upload.'})
                 email_body = (b'Content-Type: '+ctype.encode()+b'\r\nMIME-Version: 1.0\r\n\r\n'+body)
                 msg = BytesParser(policy=default).parsebytes(email_body)
-                part = next((p for p in msg.iter_parts() if p.get_param('name',header='content-disposition')=='file'),None)
-                if part is None:
-                    return self.send_json(400,{'error':'Select an .xlsx or .csv file.'})
-                filename = str(part.get_filename() or 'upload.xlsx')
+                parts = list(msg.iter_parts())
+                files = [p for p in parts if p.get_param('name', header='content-disposition') == 'file']
+                ocr_parts = [p for p in parts if p.get_param('name', header='content-disposition') == 'ocr']
+                if (not msg.is_multipart() or msg.defects or len(files) != 1
+                        or len(ocr_parts) > 1 or len(parts) != len(files) + len(ocr_parts)
+                        or any(p.is_multipart() or p.defects or p.get_content_disposition() != 'form-data' for p in parts)):
+                    return self.send_json(400, {'error': 'Upload exactly one .xlsx, .csv or .pdf file.'})
+                part = files[0]
+                filename = str(part.get_filename() or '')
+                if len(filename) > 200 or not filename.lower().endswith(('.xlsx', '.csv', '.pdf')):
+                    return self.send_json(400, {'error': 'Select an .xlsx, .csv or .pdf file.'})
                 raw = part.get_payload(decode=True)
+                if not raw:
+                    return self.send_json(400, {'error': 'File is empty.'})
+                if len(raw) > MAX_UPLOAD:
+                    return self.send_json(413, {'error': 'File exceeds the 12 MiB limit.'})
+                if ocr_parts and (not filename.lower().endswith('.pdf') or ocr_parts[0].get_filename()
+                                  or ocr_parts[0].get_payload(decode=True) not in (b'true', b'false')):
+                    return self.send_json(400, {'error': 'OCR is an optional true/false field for PDF files only.'})
+                if filename.lower().endswith('.pdf'):
+                    force_ocr = bool(ocr_parts and ocr_parts[0].get_payload(decode=True) == b'true')
+                    document = preview_pdf(raw, filename, force_ocr=force_ocr)
+                    token = secrets.token_urlsafe(24)
+                    with DATA_LOCK:
+                        if sid not in SESSIONS:
+                            return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
+                        PENDING_IMPORTS[sid] = {'token':token, 'created':time.monotonic(), 'document':document}
+                    return self.send_json(200,{'ok':True,'review_required':True,'review_token':token,'document':document})
                 new_result = analyze(read_data(raw,filename))
                 with DATA_LOCK:
                     active = sid in SESSIONS
                     if active:
-                        SESSIONS[sid] = new_result
+                        SESSIONS[sid]['data'] = new_result
+                        PENDING_IMPORTS.pop(sid, None)
                 if not active:
                     return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                 return self.send_json(200,{'ok':True,'summary':new_result})
+            if path == '/api/pdf/confirm':
+                with DATA_LOCK:
+                    pending = PENDING_IMPORTS.get(sid)
+                if (not pending or payload.get('review_token') != pending['token'] or
+                        time.monotonic() - pending['created'] > PDF_REVIEW_SECONDS):
+                    return self.send_json(400,{'error':'This PDF review expired or was replaced. Upload the PDF again.'})
+                new_result = analyze(reviewed_data(payload))
+                document = pending['document']
+                new_result['import_source'] = {key:document[key] for key in ('filename','pages','used_ocr')}
+                new_result['import_source']['reviewed'] = True
+                with DATA_LOCK:
+                    if PENDING_IMPORTS.get(sid) is not pending:
+                        return self.send_json(409,{'error':'Another upload replaced this review. Upload the PDF again.'})
+                    SESSIONS[sid]['data'] = new_result
+                    PENDING_IMPORTS.pop(sid, None)
+                return self.send_json(200,{'ok':True,'summary':new_result})
+            if path == '/api/pdf/cancel':
+                with DATA_LOCK:
+                    pending = PENDING_IMPORTS.get(sid)
+                    if pending and payload.get('review_token') == pending['token']:
+                        PENDING_IMPORTS.pop(sid, None)
+                return self.send_json(200,{'ok':True})
             if path == '/api/reset':
                 with DATA_LOCK:
                     active = sid in SESSIONS
                     if active:
-                        SESSIONS[sid] = DEFAULT_RESULT
+                        SESSIONS[sid]['data'] = DEFAULT_RESULT
+                        PENDING_IMPORTS.pop(sid, None)
                 if not active:
                     return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                 return self.send_json(200,{'ok':True,'summary':DEFAULT_RESULT})
-            if path not in ('/api/ask','/api/cover'):
-                return self.send_json(404,{'error':'Unknown endpoint.'})
-            payload = json.loads(body.decode('utf-8'))
             with DATA_LOCK:
-                result = SESSIONS.get(sid)
+                entry = SESSIONS.get(sid)
+                result = entry['data'] if entry else None
             if result is None:
                 return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
             if path == '/api/ask':
@@ -399,8 +595,8 @@ class Handler(BaseHTTPRequestHandler):
                     except (RuntimeError, ValueError, KeyError, TypeError) as exc:
                         # A broken upstream AI service must never disable financial analysis.
                         # Never return token or raw upstream response.
-                        print('Akamai assistant unavailable:',str(exc)[:180])
-                        warning = str(exc)[:200]
+                        print('Akamai assistant unavailable:', type(exc).__name__)
+                        warning = 'Akamai is unavailable. Using verified local calculations.'
                 else:
                     warning = 'Akamai team API key is not configured.'
                 return self.send_json(200,{'answer':offline_answer(question,result),
@@ -419,23 +615,30 @@ class Handler(BaseHTTPRequestHandler):
                 if len(result) > 3_000_000:
                     raise ValueError('Image response is too large.')
                 return self.send_json(200,{'image':'data:image/png;base64,'+result,'source':'Akamai hackathon-image'})
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            return self.send_json(400,{'error':str(exc)[:240]})
-        except RuntimeError as exc:
-            return self.send_json(502,{'error':str(exc)[:240]})
+        except ValueError:
+            # Input validators use bounded messages; parser/upstream exceptions
+            # can contain echoed data, so do not send their raw text to clients.
+            return self.send_json(400, {'error': 'Invalid file or request. Check the documented input format and limits.'})
+        except (KeyError, TypeError, IndexError, RuntimeError):
+            return self.send_json(502, {'error': 'The request could not be processed or the AI service is unavailable.'})
+        except TimeoutError:
+            return self.send_json(408, {'error': 'Request timed out.'})
         except Exception as exc:
-            print('Server error',repr(exc))
+            print('Server error:', type(exc).__name__)
             return self.send_json(500,{'error':'Something went wrong processing the request. Check the terminal.'})
 
 
 def run():
     conf = config()
+    settings = SecuritySettings.from_config(conf)
     host = conf.get('HOST','127.0.0.1')
     port = int(conf.get('PORT','8000'))
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = FinovaHTTPServer((host, port), Handler, settings)
     print('\nFINOVA is running at http://%s:%d' % (host,port))
     print('Akamai: '+('configured' if akamai_configured() else 'not configured (offline demo works)'))
     print('Press Ctrl+C to stop. Local demo only; do NOT expose directly to the public internet.\n')
+    if settings.mode == 'proxy':
+        print('Authenticated HTTPS proxy required at ' + settings.public_origin)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

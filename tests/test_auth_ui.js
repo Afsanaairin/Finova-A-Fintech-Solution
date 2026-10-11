@@ -86,6 +86,7 @@ class FixtureDate extends Date {
 const context = vm.createContext({
   document: {
     getElementById: element,
+    querySelectorAll() { return []; },
     querySelector(selector) { assert.equal(selector, '.layout'); return layout; }
   },
   window: {
@@ -95,6 +96,8 @@ const context = vm.createContext({
     localStorage: {setItem(key, value) { logoutEvents.push({key, value}); }}
   },
   AbortController,
+  Headers,
+  clearTimeout() {},
   Date: FixtureDate,
   setTimeout() { return 1; },
   setInterval(callback) { interval = callback; return 1; },

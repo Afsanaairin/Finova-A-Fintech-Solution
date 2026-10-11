@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib import request, error
 from urllib.parse import urlsplit
 
+from auth import AuthError, AuthService
 from finance import analyze
 from security import FinovaHTTPServer, SecuritySettings
 from xlsx_reader import read_data
@@ -66,6 +67,9 @@ def akamai_configured():
     v = config()
     key = v.get('OPENAI_API_KEY','')
     return bool(key and key.startswith('hk_') and 'paste' not in key.lower() and 'your_' not in key.lower() and len(key) > 8)
+
+
+AUTH = AuthService(BASE / 'data' / 'auth.sqlite3', config)
 
 
 def call_akamai(path, payload, timeout=35):
@@ -283,6 +287,101 @@ class Handler(BaseHTTPRequestHandler):
                 PENDING_IMPORTS.pop(key, None)
         return sid
 
+    def _auth_token(self):
+        cookie = cookies.SimpleCookie()
+        try:
+            cookie.load(self.headers.get('Cookie', ''))
+        except cookies.CookieError:
+            return ''
+        return cookie['finova_auth'].value if 'finova_auth' in cookie else ''
+
+    def _auth_cookie(self, token, max_age):
+        secure = self.server.security.mode == 'proxy' or config().get('COOKIE_SECURE', 'false').lower() == 'true'
+        self._set_auth_cookie = (
+            f'finova_auth={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}'
+            + ('; Secure' if secure else '')
+        )
+
+    def _auth_origin_allowed(self):
+        # Same-origin browser requests are accepted; command-line clients may omit Origin.
+        if self.headers.get('Sec-Fetch-Site', '').lower() == 'cross-site':
+            return False
+        origin = self.headers.get('Origin')
+        if origin is None:
+            return True
+        conf = config()
+        scheme = 'https' if conf.get('COOKIE_SECURE', 'false').lower() == 'true' else 'http'
+        expected = self.server.security.public_origin or conf.get('PUBLIC_ORIGIN', '').strip() or f"{scheme}://{self.headers.get('Host', '')}"
+        try:
+            actual_url, expected_url = urlsplit(origin), urlsplit(expected)
+            if actual_url.scheme not in ('http', 'https') or not actual_url.hostname:
+                return False
+            if actual_url.username or actual_url.password or actual_url.path or actual_url.query or actual_url.fragment:
+                return False
+            actual_port = actual_url.port or (443 if actual_url.scheme == 'https' else 80)
+            expected_port = expected_url.port or (443 if expected_url.scheme == 'https' else 80)
+            return (actual_url.scheme, actual_url.hostname, actual_port) == (
+                expected_url.scheme, expected_url.hostname, expected_port
+            )
+        except ValueError:
+            return False
+
+    def handle_auth_post(self, path):
+        if path not in ('/api/auth/send-code', '/api/auth/verify-code', '/api/auth/logout'):
+            return self.send_json(404, {'error': 'Unknown authentication endpoint.'})
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            return self.send_json(400, {'error': 'Invalid request length.'})
+        if length <= 0:
+            return self.send_json(400, {'error': 'A JSON request body is required.'})
+        if length > 4096:
+            # Consume a bounded body so small rejected requests do not reset Windows sockets.
+            self.rfile.read(min(length, 4097))
+            return self.send_json(413, {'error': 'Authentication request is too large.'})
+        body = self.rfile.read(length)
+        if not self._auth_origin_allowed():
+            return self.send_json(403, {'error': 'Authentication requests must come from this website.'})
+        if self.headers.get('Content-Type', '').split(';', 1)[0].strip().lower() != 'application/json':
+            return self.send_json(415, {'error': 'Expected an application/json request.'})
+        try:
+            payload = json.loads(body.decode('utf-8'))
+            if not isinstance(payload, dict):
+                return self.send_json(400, {'error': 'Expected a JSON object.'})
+            if path == '/api/auth/send-code':
+                response = AUTH.send_code(payload.get('email', ''), self.client_address[0])
+            elif path == '/api/auth/verify-code':
+                result = AUTH.verify_code(
+                    payload.get('email', ''), payload.get('code', ''), self._auth_token()
+                )
+                self._auth_cookie(result['token'], result['max_age'])
+                response = {'ok': True, 'user': result['user']}
+            else:
+                AUTH.logout(self._auth_token())
+                self._auth_cookie('', 0)
+                # Retire uploaded data and start a fresh anonymous demo session.
+                sid = self._session()
+                if sid is None:
+                    return
+                with DATA_LOCK:
+                    SESSIONS.pop(sid, None)
+                    PENDING_IMPORTS.pop(sid, None)
+                self._set_cookie = None
+                self._clear_demo_cookie = True
+                response = {'ok': True, 'user': None}
+            return self.send_json(200, response)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_json(400, {'error': 'Invalid JSON request.'})
+        except AuthError as exc:
+            response = {'error': exc.message}
+            if exc.retry_after:
+                self._retry_after = exc.retry_after
+                response['retry_after'] = exc.retry_after
+            return self.send_json(exc.status, response)
+        except Exception:
+            # Authentication failures must never expose email credentials or challenge values.
+            return self.send_json(500, {'error': 'Authentication is temporarily unavailable. Please try again.'})
+
     def send_bytes(self, status, body, content_type='application/json; charset=utf-8'):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -295,6 +394,13 @@ class Handler(BaseHTTPRequestHandler):
         if getattr(self,'_set_cookie',None):
             secure = '; Secure' if self.server.security.mode == 'proxy' else ''
             self.send_header('Set-Cookie', f'finova_demo={self._set_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}{secure}')
+        if getattr(self, '_clear_demo_cookie', False):
+            secure = '; Secure' if self.server.security.mode == 'proxy' else ''
+            self.send_header('Set-Cookie', f'finova_demo=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}')
+        if getattr(self, '_set_auth_cookie', None):
+            self.send_header('Set-Cookie', self._set_auth_cookie)
+        if getattr(self, '_retry_after', None):
+            self.send_header('Retry-After', str(self._retry_after))
         self.end_headers()
         self.wfile.write(body)
 
@@ -311,6 +417,17 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorize():
             return
         path = urlsplit(self.path).path
+        if path == '/api/auth/me':
+            if self._session() is None:
+                return
+            token = self._auth_token()
+            try:
+                user = AUTH.get_user(token)
+                if token and user is None:
+                    self._auth_cookie('', 0)
+                return self.send_json(200, {'ok': True, 'user': user})
+            except Exception:
+                return self.send_json(503, {'error': 'Authentication is temporarily unavailable. Please try again.'})
         if path == '/api/health':
             return self.send_json(200,{'ok':True,'name':'FINOVA','akamai_key_loaded':akamai_configured(), 'akamai_connected':False,
                                        'pdf_support':pdf_capabilities(),
@@ -338,7 +455,10 @@ class Handler(BaseHTTPRequestHandler):
             if sid is None:
                 return
             with DATA_LOCK:
-                data = SESSIONS[sid]['data']
+                entry = SESSIONS.get(sid)
+                data = entry['data'] if entry else None
+            if data is None:
+                return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
             return self.send_json(200, data)
         if path in ('/','/static/styles.css','/static/app.js','/static/wrapped.js','/static/pdf-upload.js'):
             file = BASE/'static'/('index.html' if path=='/' else path.removeprefix('/static/'))
@@ -349,6 +469,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorize():
             return
         path = urlsplit(self.path).path
+        if path.startswith('/api/auth/'):
+            if self._session() is None:
+                return
+            return self.handle_auth_post(path)
         if path not in ('/api/upload', '/api/pdf/confirm', '/api/pdf/cancel', '/api/reset', '/api/ask', '/api/cover'):
             return self.send_json(404, {'error': 'Unknown endpoint.'})
         try:
@@ -409,12 +533,18 @@ class Handler(BaseHTTPRequestHandler):
                     document = preview_pdf(raw, filename, force_ocr=force_ocr)
                     token = secrets.token_urlsafe(24)
                     with DATA_LOCK:
+                        if sid not in SESSIONS:
+                            return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                         PENDING_IMPORTS[sid] = {'token':token, 'created':time.monotonic(), 'document':document}
                     return self.send_json(200,{'ok':True,'review_required':True,'review_token':token,'document':document})
                 new_result = analyze(read_data(raw,filename))
                 with DATA_LOCK:
-                    SESSIONS[sid]['data'] = new_result
-                    PENDING_IMPORTS.pop(sid, None)
+                    active = sid in SESSIONS
+                    if active:
+                        SESSIONS[sid]['data'] = new_result
+                        PENDING_IMPORTS.pop(sid, None)
+                if not active:
+                    return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                 return self.send_json(200,{'ok':True,'summary':new_result})
             if path == '/api/pdf/confirm':
                 with DATA_LOCK:
@@ -440,11 +570,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200,{'ok':True})
             if path == '/api/reset':
                 with DATA_LOCK:
-                    SESSIONS[sid]['data'] = DEFAULT_RESULT
-                    PENDING_IMPORTS.pop(sid, None)
+                    active = sid in SESSIONS
+                    if active:
+                        SESSIONS[sid]['data'] = DEFAULT_RESULT
+                        PENDING_IMPORTS.pop(sid, None)
+                if not active:
+                    return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
                 return self.send_json(200,{'ok':True,'summary':DEFAULT_RESULT})
             with DATA_LOCK:
-                result = SESSIONS[sid]['data']
+                entry = SESSIONS.get(sid)
+                result = entry['data'] if entry else None
+            if result is None:
+                return self.send_json(409, {'error': 'The session has changed. Please refresh the page.'})
             if path == '/api/ask':
                 question = str(payload.get('question','')).strip()[:500]
                 if not question:

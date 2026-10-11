@@ -12,6 +12,7 @@ const palette = [
 const seconds = 3.8;
 let data=null, art=null, playing=false, recording=false, raf=0, startTime=0;
 let recorder=null, chunks=[], audioCtx=null, audioDestination=null, downloadURL=null;
+let captureStream=null, playbackGeneration=0, artworkGeneration=0;
 const canvas=$('story-canvas'), ctx=canvas.getContext('2d',{alpha:false});
 let size='portrait';
 const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
@@ -144,7 +145,9 @@ function draw(t){
  }
 }
 function setStatus(s,isError=false){const target=$('story-status');target.textContent=s;target.classList.toggle('story-error',isError)}
-function stopAudio(){if(audioCtx){audioCtx.close().catch(()=>{});audioCtx=null;audioDestination=null}}
+function stopTracks(stream){if(stream)stream.getTracks().forEach(track=>track.stop())}
+function stopCapture(){stopTracks(captureStream);captureStream=null}
+function stopAudio(){stopTracks(audioDestination?.stream);if(audioCtx){audioCtx.close().catch(()=>{});audioCtx=null}audioDestination=null}
 function makeMusic(){
  if(!$('story-sound').checked)return null;
  try{
@@ -167,17 +170,19 @@ function makeMusic(){
   return audioDestination.stream;
  }catch(e){stopAudio();return null}
 }
-function finalPlayback(){playing=false;$('story-play').disabled=false;$('story-export').disabled=false;$('story-play').textContent='▶ Play again';$('story-format').disabled=false;stopAudio();}
-function renderLoop(now){
+function finalPlayback(){playing=false;recording=false;$('story-play').disabled=false;$('story-export').disabled=false;$('story-play').textContent='▶ Play again';$('story-format').disabled=false;stopCapture();stopAudio();}
+function renderLoop(now,generation){
+ if(generation!==playbackGeneration||!playing||!data)return;
  const elapsed=(now-startTime)/1000,total=seconds*8;
  draw(Math.min(total-.001,elapsed));$('story-progress').value=Math.min(100,elapsed/total*100);
- if(elapsed<total&&playing){raf=requestAnimationFrame(renderLoop)}else{
+ if(elapsed<total&&playing){raf=requestAnimationFrame(time=>renderLoop(time,generation))}else{
   playing=false;cancelAnimationFrame(raf);
   if(recording&&recorder?.state==='recording')recorder.stop();else finalPlayback();
  }
 }
 async function play(exportVideo=false){
  if(!data||playing)return;
+ const generation=++playbackGeneration;
  if(downloadURL){URL.revokeObjectURL(downloadURL);downloadURL=null}
  size=$('story-format').value;dimensions();playing=true;recording=exportVideo;
  $('story-play').disabled=true;$('story-export').disabled=true;$('story-format').disabled=true;
@@ -189,29 +194,49 @@ async function play(exportVideo=false){
    const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'].find(s=>MediaRecorder.isTypeSupported(s));
    if(!mime){recording=false;playing=false;stopAudio();setStatus('No compatible browser video recording format. Try current Chrome or Edge.',true);finalPlayback();$('story-format').disabled=false;return}
    try{
-     const combined=canvas.captureStream(30);
+     const combined=canvas.captureStream(30);captureStream=combined;
      if(music)music.getAudioTracks().forEach(track=>combined.addTrack(track));
      chunks=[];recorder=new MediaRecorder(combined,{mimeType:mime,videoBitsPerSecond:4000000});
-     recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
-     recorder.onerror=e=>setStatus('Video recorder error: '+(e.error?.message||'unknown error'),true);
-     recorder.onstop=()=>{
+     const activeRecorder=recorder;
+     activeRecorder.ondataavailable=e=>{if(generation===playbackGeneration&&recorder===activeRecorder&&e.data.size)chunks.push(e.data)};
+     activeRecorder.onerror=e=>{if(generation===playbackGeneration&&recorder===activeRecorder)setStatus('Video recorder error: '+(e.error?.message||'unknown error'),true)};
+     activeRecorder.onstop=()=>{
+       if(generation!==playbackGeneration||recorder!==activeRecorder)return;
        let blob=new Blob(chunks,{type:mime});if(blob.size<5000){setStatus('The recording was too small. Keep the tab visible and try again.',true)}
        else{
         downloadURL=URL.createObjectURL(blob);const extension=mime.includes('mp4')?'mp4':'webm';
         const a=document.createElement('a');a.href=downloadURL;a.download='FINOVA_Business_Wrapped.'+extension;document.body.appendChild(a);a.click();a.remove();
         setStatus('Video exported: FINOVA_Business_Wrapped.'+extension+' ('+(blob.size/1048576).toFixed(1)+' MB).');
        }
-       finalPlayback();$('story-format').disabled=false;
+       chunks=[];recorder=null;finalPlayback();$('story-format').disabled=false;
      };
      recorder.start(250);
    }catch(e){recording=false;playing=false;setStatus('Recording could not start: '+e.message,true);finalPlayback();$('story-format').disabled=false;return}
  }
- raf=requestAnimationFrame(renderLoop);
+ raf=requestAnimationFrame(time=>renderLoop(time,generation));
+}
+function reset(){
+ // Invalidate queued callbacks before releasing private artwork and recording resources.
+ playbackGeneration++;artworkGeneration++;playing=false;recording=false;
+ cancelAnimationFrame(raf);raf=0;startTime=0;
+ const activeRecorder=recorder;recorder=null;
+ if(activeRecorder){
+  activeRecorder.ondataavailable=null;activeRecorder.onerror=null;activeRecorder.onstop=null;
+  if(activeRecorder.state!=='inactive'){try{activeRecorder.stop()}catch{}}
+ }
+ stopCapture();stopAudio();chunks=[];data=null;art=null;
+ if(downloadURL){URL.revokeObjectURL(downloadURL);downloadURL=null}
+ size='portrait';$('story-format').value=size;$('story-format').disabled=false;
+ $('story-sound').checked=true;$('story-progress').value=0;
+ $('story-play').disabled=false;$('story-play').textContent='▶ Play Wrapped';
+ $('story-export').disabled=false;$('story-export').textContent='↧ Export video';
+ dimensions();ctx.fillStyle=palette[0][0];ctx.fillRect(0,0,canvas.width,canvas.height);
+ setStatus('Loading financial story…');
 }
 function init(){
  dimensions();$('story-play').addEventListener('click',()=>play(false));$('story-export').addEventListener('click',()=>play(true));
  $('story-format').addEventListener('change',()=>{if(playing)return;size=$('story-format').value;dimensions();draw(.9)});
  document.addEventListener('visibilitychange',()=>{if(document.hidden&&recording)setStatus('Keep this browser tab visible during export for smooth video recording.',true)});
 }
-window.FINOVAStory={init,setData(d){data=d;draw(.9);setStatus(d?'Ready · 8 scenes · 30 seconds. Choose Play or Export video.':'Upload transaction records to create a Business Wrapped story.')},setArt(image){const img=new Image();img.onload=()=>{art=img;draw(.9)};img.onerror=()=>setStatus('Generated artwork could not be loaded.',true);img.src=image},setStatus,resetArt(){art=null;draw(.9)}};
+window.FINOVAStory={init,reset,setData(d){data=d;draw(.9);setStatus('Ready · 8 scenes · 30 seconds. Choose Play or Export video.')},setArt(image){const generation=++artworkGeneration;const img=new Image();img.onload=()=>{if(generation!==artworkGeneration)return;art=img;draw(.9)};img.onerror=()=>{if(generation===artworkGeneration)setStatus('Generated artwork could not be loaded.',true)};img.src=image},setStatus,resetArt(){artworkGeneration++;art=null;draw(.9)}};
 })();

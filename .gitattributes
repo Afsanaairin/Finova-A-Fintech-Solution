@@ -1,0 +1,2 @@
+# Linux certificate renewal hooks must retain Unix line endings from Windows.
+deploy/*.sh text eol=lf

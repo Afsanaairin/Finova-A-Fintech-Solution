@@ -24,10 +24,12 @@ function switchPage(id){
 }
 async function getJSON(url,options={}){
  const {timeoutMs=45000,timeoutMessage='The request timed out. Check that FINOVA is running and try again.',...requestOptions}=options;
+ const headers=new Headers(requestOptions.headers);
+ if((requestOptions.method||'GET').toUpperCase()==='POST')headers.set('X-Finova-Request','1');
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
  try{
-  const r=await fetch(url,{...requestOptions,signal:controller.signal});let d;
-  try{d=await r.json()}catch(e){if(e.name==='AbortError')throw e;throw new Error('Server returned a non-JSON response.')}
+  const r=await fetch(url,{...requestOptions,headers,signal:controller.signal});let d;
+  try{d=await r.json()}catch(e){if(e.name==='AbortError')throw e;throw new Error(r.status===401?'Sign in to FINOVA to continue.':'Server returned a non-JSON response.')}
   if(!r.ok)throw new Error(d.error||'Request failed');return d;
  }catch(e){if(e.name==='AbortError')throw new Error(timeoutMessage);throw e;}
  finally{clearTimeout(timer);}

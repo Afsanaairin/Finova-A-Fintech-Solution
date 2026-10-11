@@ -130,6 +130,8 @@ This importer does not understand every bank or invoice layout. Wrapped rows, mi
 
 Limits: **12 MB**, **20 pages**, up to **5 scanned/OCR pages**, and **1,000 reviewed records** per PDF. Reviews expire after 15 minutes. Password-protected or damaged PDFs are rejected. Records must be USD; currency conversion is not included. Vendor bills and payroll registers are not independently modeled; include only actual payments in transaction analysis.
 
+PDF confirmation JSON is capped at **2 MiB** so reviewed record batches fit; other JSON endpoints retain an **8 KiB** limit. The deployment proxy template uses the same limits. PDF upload, confirmation, cancellation, and OCR retry use the same authentication, session isolation, and request checks as other routes.
+
 Extraction has a 60-second processing budget, and the browser stops waiting for PDF uploads after 75 seconds. Upload errors stay visible until the next upload. If the screen asks you to restart FINOVA, stop the old process with **Ctrl+C**, run `python3 run.py` again from this folder, and reload the browser; the running Python server must be restarted to load the PDF routes.
 
 Try the fictional files in [data/pdf_examples](data/pdf_examples): `bank-statement.pdf`, `customer-invoice.pdf`, and `scanned-bank-statement.pdf`.
@@ -184,7 +186,7 @@ On macOS/Linux:
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover financial reconciliations, anomalies, cash balances, forecasting, CSV uploads, PDF extraction and OCR, invoice-only analysis, and the review/confirmation lifecycle. Actual PDF/OCR integration tests are skipped if their optional system tools are not installed.
+Tests cover financial reconciliations, anomalies, cash balances, forecasting, CSV/XLSX parsing, PDF extraction and OCR, invoice-only analysis, the review/confirmation lifecycle, proxy authentication, session isolation, request limits, and secret handling. They never require live AI credentials. Actual PDF/OCR integration tests are skipped if their optional system tools are not installed.
 
 ## 6 — Architecture
 
@@ -218,12 +220,13 @@ The app contains **no hidden dependency on Flask, pandas, Node.js, cloud databas
 **This version is a local hackathon demo, not a banking product or production-ready multitenant service.**
 
 - Contains fictional financial records only. Do **not** upload real personal or business financial records to an exposed demo server.
-- File uploads are capped at 12 MB; ZIP decompression and row counts are capped.
-- Demo records are kept in memory per browser session; no account system or persistent database is included.
+- Files are capped at 12 MiB, with an additional 64 KiB multipart allowance. JSON requests are capped at 8 KiB. ZIP decompression, entries, sheets, rows, columns, and cells are bounded; XML entities are rejected.
+- Demo records are kept in bounded, expiring browser sessions. Local mode is loopback-only; proxy mode requires an authenticated HTTPS gateway and binds sessions to its verified username. No persistent database is included.
 - Financial summaries may be sent to the Akamai hosted AI endpoint when a real key is configured, but raw transactions are not sent to chat in this version.
 - Forecasts and subscription signals are informational, not investment or accounting advice. No money movement or subscription cancellation occurs.
 - Never commit `.env` or include secrets in a hackathon submission.
-- Recommended production work: authentication, tenant isolation, encrypted storage, rate limits, HTTPS/reverse proxy, access logs and retention rules.
+- Before remote publication, apply and verify the restricted service account, HTTPS/authenticated nginx proxy, host and cloud firewall, and server-only secret configuration in [deploy/README.md](deploy/README.md). The templates support a restricted demo; production still requires an appropriate application server and a reviewed account/data model.
+- Run `python3 tools/check_secrets.py` before pushing. Keep `.env`, private keys, passwords, and populated deployment files out of Git and public JavaScript.
 
 Built during Hack Midwest 2026 — **FINOVA = Finance Innovation**.
 

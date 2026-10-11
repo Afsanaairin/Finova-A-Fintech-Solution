@@ -1,6 +1,7 @@
 """PDF extraction, financial boundaries, and upload/review lifecycle regressions."""
 import io
 import json
+from email.message import Message
 from pathlib import Path
 import re
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 import zlib
 
@@ -80,7 +82,12 @@ def post(path, payload, session='pdf-test-session', content_type='application/js
     handler = object.__new__(server.Handler)
     body = json.dumps(payload).encode() if content_type == 'application/json' else payload
     handler.path = path
-    handler.headers = {'Content-Length': str(len(body)), 'Content-Type': content_type}
+    handler.headers = Message()
+    for name, value in {'Content-Length': str(len(body)), 'Content-Type': content_type,
+                        'Host': '127.0.0.1:8000', 'X-Finova-Request': '1'}.items():
+        handler.headers[name] = value
+    handler.command = 'POST'
+    handler.server = SimpleNamespace(security=server.SecuritySettings(), server_port=8000)
     handler.rfile = io.BytesIO(body)
     handler._session = lambda: session
     handler.send_json = lambda status, data: (status, data)
@@ -240,7 +247,7 @@ class PdfExtractionTests(unittest.TestCase):
 class PdfUploadLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.session = 'pdf-test-session'
-        server.SESSIONS[self.session] = server.DEFAULT_RESULT
+        server.SESSIONS[self.session] = {'data': server.DEFAULT_RESULT, 'user': 'local', 'seen': time.monotonic()}
         server.PENDING_IMPORTS.pop(self.session, None)
         self.document = {'filename': 'bank.pdf', 'kind': 'transactions', 'pages': 1, 'used_ocr': False,
                          'transaction_rows': [{'Date': '2026-09-01', 'Type': 'Income', 'Amount_USD': 1200}],
@@ -260,7 +267,7 @@ class PdfUploadLifecycleTests(unittest.TestCase):
     def test_preview_does_not_replace_dashboard_and_confirm_imports_corrections(self):
         response = self.upload()
         self.assertTrue(response['review_required'])
-        self.assertIs(server.SESSIONS[self.session], server.DEFAULT_RESULT)
+        self.assertIs(server.SESSIONS[self.session]['data'], server.DEFAULT_RESULT)
         payload = {'review_token': response['review_token'], 'kind': 'transactions', 'confirmed': True,
                    'rows': [{'Date': '2026-09-01', 'Type': 'Income', 'Amount_USD': 1250}]}
         status, response = post('/api/pdf/confirm', payload)
@@ -278,7 +285,7 @@ class PdfUploadLifecycleTests(unittest.TestCase):
         payload['review_token'] = response['review_token']
         payload['rows'][0]['Amount_USD'] = 'not an amount'
         self.assertEqual(post('/api/pdf/confirm', payload)[0], 400)
-        self.assertIs(server.SESSIONS[self.session], server.DEFAULT_RESULT)
+        self.assertIs(server.SESSIONS[self.session]['data'], server.DEFAULT_RESULT)
 
     def test_cancel_and_expired_reviews_preserve_dashboard(self):
         response = self.upload()
@@ -288,7 +295,7 @@ class PdfUploadLifecycleTests(unittest.TestCase):
         response = self.upload()
         server.PENDING_IMPORTS[self.session]['created'] = time.monotonic() - 901
         self.assertEqual(post('/api/pdf/confirm', {'review_token': response['review_token']})[0], 400)
-        self.assertIs(server.SESSIONS[self.session], server.DEFAULT_RESULT)
+        self.assertIs(server.SESSIONS[self.session]['data'], server.DEFAULT_RESULT)
 
     @unittest.skipUnless(pdf_capabilities()['text'], 'Poppler not installed')
     def test_pdf_only_invoice_upload_and_confirmation(self):

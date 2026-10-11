@@ -84,6 +84,34 @@ class HTTPBoundaryTests(unittest.TestCase):
             with self.subTest(headers=headers):
                 self.assertEqual(self.request(headers=headers)[0], 403)
 
+    def test_browser_can_open_home_page_from_an_external_link(self):
+        headers = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
+                   'Sec-Fetch-Dest': 'document', 'Sec-Fetch-User': '?1'}
+        status, response_headers, body = self.request(path='/', headers=headers)
+        self.assertEqual(status, 200)
+        self.assertIn('text/html', response_headers['Content-Type'])
+        self.assertIn(b'FINOVA', body)
+        self.assertNotIn('Set-Cookie', response_headers)
+        self.assertFalse(server.SESSIONS)
+        # The exception must not bypass the authenticated proxy.
+        self.assertEqual(self.request(path='/', headers=headers, trusted=False)[0], 403)
+
+    def test_navigation_exception_does_not_allow_cross_site_api_or_posts(self):
+        headers = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
+                   'Sec-Fetch-Dest': 'document'}
+        for path in ('/api/dashboard', '/api/health', '/api/akamai-test', '/static/app.js'):
+            with self.subTest(path=path), patch.object(server, 'upstream_json') as upstream:
+                self.assertEqual(self.request(path=path, headers=headers)[0], 403)
+                upstream.assert_not_called()
+        for method, path in [('POST', '/'), ('POST', '/api/upload'), ('POST', '/api/reset'),
+                             ('POST', '/api/ask'), ('POST', '/api/cover')]:
+            with self.subTest(method=method, path=path):
+                self.assertEqual(self.request(method, path, '{}', headers)[0], 403)
+        for changes in ({'Sec-Fetch-Mode': 'cors'}, {'Sec-Fetch-Dest': 'iframe'},
+                        {'Origin': 'https://evil.example'}):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.request(path='/', headers={**headers, **changes})[0], 403)
+
     def test_posts_require_csrf_marker_and_accept_same_origin_json(self):
         self.assertEqual(self.request('POST', '/api/reset', '{}', {'X-Finova-Request': ''})[0], 403)
         self.assertEqual(self.request('POST', '/api/reset', '{}', {'Origin': ORIGIN})[0], 200)
@@ -195,9 +223,18 @@ class ConfigurationAndImporterTests(unittest.TestCase):
         thread = threading.Thread(target=backend.serve_forever, daemon=True)
         thread.start()
         try:
-            for host, status in [(f'127.0.0.1:{backend.server_port}', 200), ('evil.example', 403)]:
+            navigation = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
+                          'Sec-Fetch-Dest': 'document'}
+            for host, path, headers, status in [
+                (f'127.0.0.1:{backend.server_port}', '/api/health', {}, 200),
+                ('evil.example', '/api/health', {}, 403),
+                (f'localhost:{backend.server_port}', '/', navigation, 200),
+                (f'127.0.0.1:{backend.server_port}', '/', navigation, 200),
+                (f'localhost:{backend.server_port}', '/api/dashboard', navigation, 403),
+                ('evil.example', '/', navigation, 403),
+            ]:
                 conn = http.client.HTTPConnection(*backend.server_address, timeout=5)
-                conn.request('GET', '/api/health', headers={'Host': host})
+                conn.request('GET', path, headers={'Host': host, **headers})
                 response = conn.getresponse()
                 self.assertEqual(response.status, status)
                 response.read()

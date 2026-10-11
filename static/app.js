@@ -17,7 +17,7 @@ function switchPage(id){
  if(id==='overview'||id==='forecast') requestAnimationFrame(drawCharts);
  window.scrollTo({top:0,behavior:'smooth'});
 }
-async function getJSON(url,options){const r=await fetch(url,options);let d;try{d=await r.json()}catch{throw new Error('Server returned a non-JSON response.')}if(!r.ok)throw new Error(d.error||'Request failed');return d;}
+async function getJSON(url,options={}){const headers=new Headers(options.headers);if((options.method||'GET').toUpperCase()==='POST')headers.set('X-Finova-Request','1');const r=await fetch(url,{...options,headers});let d;try{d=await r.json()}catch{throw new Error(r.status===401?'Sign in to FINOVA to continue.':'Server returned a non-JSON response.')}if(!r.ok)throw new Error(d.error||'Request failed');return d;}
 function lineChart(host,rows, includeForecast=false){
  const el=$(host);if(!rows.length){el.textContent='Not enough data for this chart.';return;}
  const W=760,H=295,pL=65,pT=17,pR=16,pB=43,chartW=W-pL-pR,chartH=H-pT-pB;

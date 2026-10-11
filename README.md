@@ -141,7 +141,7 @@ On macOS/Linux:
 python3 -m unittest discover -s tests -v
 ```
 
-You should see six passing tests covering financial reconciliations, anomalies, cash balances, forecasting, and CSV upload logic.
+The tests cover financial calculations, CSV/XLSX parsing, proxy authentication, session isolation, request limits, and secret handling. They never require live AI credentials.
 
 ## 6 — Architecture
 
@@ -173,12 +173,13 @@ The app contains **no hidden dependency on Flask, pandas, Node.js, cloud databas
 **This version is a local hackathon demo, not a banking product or production-ready multitenant service.**
 
 - Contains fictional financial records only. Do **not** upload real personal or business financial records to an exposed demo server.
-- File uploads are capped at 12 MB; ZIP decompression and row counts are capped.
-- Demo records are kept in memory per browser session; no account system or persistent database is included.
+- Files are capped at 12 MiB, with an additional 64 KiB multipart allowance. JSON requests are capped at 8 KiB. ZIP decompression, entries, sheets, rows, columns, and cells are bounded; XML entities are rejected.
+- Demo records are kept in bounded, expiring browser sessions. Local mode is loopback-only; proxy mode requires an authenticated HTTPS gateway and binds sessions to its verified username. No persistent database is included.
 - Financial summaries may be sent to the Akamai hosted AI endpoint when a real key is configured, but raw transactions are not sent to chat in this version.
 - Forecasts and subscription signals are informational, not investment or accounting advice. No money movement or subscription cancellation occurs.
 - Never commit `.env` or include secrets in a hackathon submission.
-- Recommended production work: authentication, tenant isolation, encrypted storage, rate limits, HTTPS/reverse proxy, access logs and retention rules.
+- Before remote publication, apply and verify the restricted service account, HTTPS/authenticated nginx proxy, host and cloud firewall, and server-only secret configuration in [deploy/README.md](deploy/README.md). The templates support a restricted demo; production still requires an appropriate application server and a reviewed account/data model.
+- Run `python3 tools/check_secrets.py` before pushing. Keep `.env`, private keys, passwords, and populated deployment files out of Git and public JavaScript.
 
 Built during Hack Midwest 2026 — **FINOVA = Finance Innovation**.
 
